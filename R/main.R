@@ -103,11 +103,10 @@ filter_contr_units <- function(shiftsDT) {
                  shiftsDT[,as.Date(Effective.End, format='%Y-%m-%d')] > Sys.Date())
   
   # Contracted ground units
-  keep = keep & shiftsDT[,Service_Type] %in% c('Contracted - First Nation', 'Contracted - Municipal/Not-for-Profit', 
-                                 'Contracted - First Nation (Private)',
-                                 'Contracted - Integrated Fire', 'Contracted - Private', 'Contracted - Air')
-  shiftsDT = shiftsDT[keep]
-  return(shiftsDT)
+  keep1 = shiftsDT[,Service_Type] %in% c('Contracted - First Nation', 'Contracted - Municipal/Not-for-Profit', 
+                                         'Contracted - First Nation (Private)',
+                                         'Contracted - Integrated Fire', 'Contracted - Private', 'Contracted - Air')
+  return(list('contr'=shiftsDT[keep & keep1], 'direct'=shiftsDT[keep & !keep1]))
 }
 
 new_vehicles <- function(fleetDT, idsDT) {
@@ -126,8 +125,9 @@ histDT = filter_nonvehicles(histDT)
 fleetDT = filter_decommissioned(fleetDT)
 
 # Identify contractor unit names
-shiftsDT = filter_contr_units(shiftsDT1)
+unpack[shiftsDT, directDT] = filter_contr_units(shiftsDT1)
 shiftsDT = filter_nonvehicles(shiftsDT, quote(Unit_Name))
+directDT = filter_nonvehicles(directDT, quote(Unit_Name))
 
 # Any units not LN in last 2 years
 novehDT = shiftsDT[!shiftsDT[,Unit_Name] %in% unhiDT[,UNID]]
@@ -147,8 +147,13 @@ setkey(shiftsDT, 'Unit_Name')
 unhiDT2 = unhiDT[shiftsDT]
 unhiDT2 = unhiDT2[!is.na(CARID)]
 
+setkey(directDT, 'Unit_Name')
+unhiDT3 = unhiDT[directDT]
+unhiDT3 = unhiDT3[!is.na(CARID)]
+directDT = unhiDT3[,.(.N, LastLogon=max(as.Date(CDTS2, tz='UTC')), Units=paste0(unique(UNID), collapse=';')), by=CARID]
+
 # Skip units that are already defined in previous Logis Vehicle project iteration
-unhiDT2 = unhiDT2[!CARID %in% idsDT[,EHS.NUMBER]]
+#unhiDT2 = unhiDT2[!CARID %in% idsDT[,EHS.NUMBER]]
 
 unhiDT2[,DGroup:=str_extract(UNID, '^[:upper:]{4}')]
 
@@ -159,6 +164,8 @@ tmpDT1 = unhiDT2[,.(.N, LastLogon=max(as.Date(CDTS2, tz='UTC')), Units=paste0(un
                  by=CARID][N < 5][order(as.numeric(CARID))]
 tmp = kable(tmpDT1, format='markdown')
 loginfo(paste0('Infrequently used vehicles:\n', paste0(tmp, collapse="\n")))
+
+# KEEP all
 
 # Multiple DGroups/Services
 tmpDT2 = unhiDT2[CARID %in% unhiDT2[,uniqueN(DGroup), by=CARID][V1 > 1, CARID], 
@@ -174,85 +181,37 @@ tmpDT3 = unhiDT2[CARID %in% unhiDT2[,uniqueN(Service), by=CARID][V1 > 1, CARID],
 tmp = kable(tmpDT3, format='markdown')
 loginfo(paste0('Vehicles appearing in multiple Services:\n', paste0(tmp, collapse="\n")))
 
-# Vehicles in AHS fleet
-tmpDT4 = unhiDT2[CARID %in% fleetDT[,AHS.Vehicle.ID], 
+tmpDT4 = unhiDT2[CARID %in% directDT[,CARID],
                  .(.N, LastLogon=max(as.Date(CDTS2, tz='UTC')), Units=paste0(unique(UNID), collapse=';')), 
                  by=CARID][order(CARID, -N)]
+tmpDT4 = merge(tmpDT4, directDT, by='CARID', all.x=TRUE, suffixes = c('.c','.d'))
 tmp = kable(tmpDT4, format='markdown')
+loginfo(paste0('Vehicles appearing in Direct Delivery Services:\n', paste0(tmp, collapse="\n")))
+
+# Remove all vehicles where the count is higher for direct delivery
+omit_vehicles = c(tmpDT4[N.d > N.c, CARID], 10095)
+
+# Assign a unique Service
+tmpDT31 = tmpDT3[,.(mxN=max(N),mxL=max(LastLogon)),by=CARID]
+tmpDT31 = tmpDT31[tmpDT3, on='CARID']
+
+# Remove all duplicate service/vehicle assignments that have fewer records
+omit_pairs = tmpDT31[N != mxN, .(CARID, Service)]
+
+# Vehicles in AHS fleet
+tmpDT5 = unhiDT2[CARID %in% fleetDT[,AHS.Vehicle.ID], 
+                 .(.N, LastLogon=max(as.Date(CDTS2, tz='UTC')), Units=paste0(unique(UNID), collapse=';')), 
+                 by=CARID][order(CARID, -N)]
+tmp = kable(tmpDT5, format='markdown')
 loginfo(paste0('Vehicles found in fleet (and not decommissioned):\n', paste0(tmp, collapse="\n")))
 
+# Clean up and output
 contrDT = unhiDT2[, .(.N, LastLogon=max(as.Date(CDTS2, tz='UTC')), Units=paste0(unique(UNID), collapse=';')), by=.(Service,CARID)]
-contrDT2 = unhiDT2[, .(.N, LastLogon=max(as.Date(CDTS2, tz='UTC'))), by=.(UNID,CARID)]
+setkey(contrDT, CARID, Service)
+contrDT = contrDT[!CARID %in% omit_vehicles]
+contrDT = contrDT[!omit_pairs, on=.(CARID, Service)]
+contrDT[,New:=ifelse(CARID %in% idsDT[,EHS.NUMBER], 0, 1)]
 
-# # Active units in shift inventory, (95% of inactive are virtual BLS/ALS alternate units)
-# histDT = filter_nonvehicles(histDT)
-# shiftsDT = shiftsDT[shiftsDT[,Unit_Name] %in% histDT[,UNID]]
-# shiftsDT[,DGroup := str_match(Unit_Name, '(^[:upper:]{4})-')[,2]]
-# shiftsDT[, uniqueN(Service), by=DGroup] # Same service for entire DGroup?
-# 
-# # Look up vehicles used by DGroup
-# setkey(histDT, 'UNID')
-# setkey(shiftsDT, 'Unit_Name')
-# histDT[,DGroup:=str_extract(UNID, '^[:upper:]{4}')]
-# histDT = histDT[shiftsDT]
-# contrDT2 = histDT[, .(Service=unique(Service), Division=unique(Division), LastLogon=max(CDTS2), NumLogons=.N, Units=list(unique(UNID))), by=.(DGroup, CARID)]
-# 
-# # Filter out one offs unless they are they are very recent (i.e. possible transfer of vehicle)
-# contrDT3 = contrDT2[, .(NumLogons=sum(NumLogons), LastLogon=max(LastLogon), Units=list(unique(unlist(Units))), DGroups=list(unique(DGroup))), by=.(Service,CARID)]
-# 
-# # Units only used once in the last 4 months might be a new unit
-# keep.date = Sys.Date() - days(120)
-# contrDT4 = contrDT3[NumLogons >= 2 | LastLogon >= keep.date]
-# 
-# # Compare this list of ShiftInventory derived contractor vehicles with the contractor list generated by removing fleet vehicles
-# 
-# # POssible contractor vehicles in in fleet
-# # Are these recently sold vehicles?
-# soldDT = contrDT4[!contrDT4[,CARID] %in% contrDT[,CARID]]
-# soldDT[soldDT[,CARID] %in% fleetDT[,AHS.Vehicle.ID], CARID]
-# 
-# # Which vehicles were not used more recently by the contractor
-# bad1 = merge(
-#   unhiDT[unhiDT[,CARID] %in% soldDT[soldDT[,CARID] %in% fleetDT[,AHS.Vehicle.ID], CARID], 
-#          max(LastLogon), by=CARID], 
-#   soldDT, by='CARID')[LastLogon < V1, CARID]
-# 
-# # Remaining unit not found in fleet and not in other contractor list is likely either a mistake/typo, a rarely used vehicle or
-# # a vehicle that got passed around in the Service so the single use per unit did not pass threshold
-# # Include them
-# soldDT[!soldDT[,CARID] %in% fleetDT[,AHS.Vehicle.ID]]
-# 
-# # Check these contractor vehicles were decommissioned in fleet
-# fleetDT[AHS.Vehicle.ID %in% soldDT[,CARID]]
-# # 2943 is only contractor vehicle active in fleet, only used once by DD in last couple months, mostly used by contractor
-# # So keep
-# 
-# # Filter bad units
-# contrDT4 = contrDT4[CARID != bad1]
-# 
-# # Check non-fleet vehicles in Unit History that do not align with ShiftInventory
-# missDT = contrDT[!contrDT[,CARID] %in% contrDT4[,CARID]]
-# 
-# # Vehicles that have not logged on in a long time are probably mistake/typos in Unit History or a recently decommissioned vehicle
-# keep.date = Sys.Date() - days(200)
-# missDT[LastLogon > keep.date]
-# 
-# # The 400** vehicles are probably missing from Fleet?
-# # 975 and 981 might be virtual units that have the wrong UNIT Name format?
-# 
-# # So don't worry about missDT vehicles, not active or are not contractor vehicles
-# 
-# # Save contractor vehicles to file
-# contrDT4[,id:=1:.N]
-# contrDT4[,Units2:=paste0(unlist(Units),collapse=';'), by=id]
-# contrDT4[,DGroups2:=paste0(unlist(DGroups),collapse=';'), by=id]
-# contrDT4[,Units:=NULL]
-# contrDT4[,DGroups:=NULL]
-# contrDT4[,id:=NULL]
-# setnames(contrDT4, "DGroups2", "DGroups")
-# setnames(contrDT4, "Units2", "Units")
-# fwrite(contrDT4, here::here('../data/final/contractor_vehicles.csv'), sep=",")
-# 
-# # Check which vehicles are new since the last Data dump
-# contrDT5 = contrDT4[!contrDT4[,CARID] %in% idsDT[,EHS.NUMBER]]
-# fwrite(contrDT5, here::here('../data/final/undocumented_contractor_vehicles.csv'), sep=",")
+setorder(contrDT, 'Service')
+
+fwrite(contrDT, here::here(paste0('../data/final/all_contractor_vehicles_',Sys.Date(),'.csv')), sep=",")
