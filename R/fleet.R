@@ -1,3 +1,5 @@
+# Direct Delivery vehicles
+
 library(data.table)
 library(lubridate)
 library(here)
@@ -9,7 +11,7 @@ library(knitr)
 
 logReset()
 basicConfig(level='INFO')
-lfn = here::here('../data/interim/contractor.log')
+lfn = here::here('../data/interim/direct_delivery.log')
 if (file.exists(lfn)) 
   file.remove(lfn)
 addHandler(writeToFile, file=lfn, level='DEBUG')
@@ -39,10 +41,6 @@ load <- function() {
   stopifnot(!any(idsDT[,is.na(EHS.NUMBER) | EHS.NUMBER == ""]))
   data.table::setkey(idsDT, 'EHS.NUMBER')
   
-  # Historical vehicles
-  histDT = data.table::fread(here::here('../data/raw/qry_UN_HI_CARID_UNID_20190318.csv'), check.names = TRUE)
-  data.table::setkey(histDT, 'CARID')
-  
   # CSD records of units
   shiftsDT = data.table::fread(here::here('../data/raw/tbl_ShiftInventory_20190320.csv'), check.names = TRUE)
   data.table::setkey(shiftsDT, 'Shift_No')
@@ -51,13 +49,13 @@ load <- function() {
   unhiDT = data.table::fread(here::here('../data/raw/qry_UN_HI_CARID_full_20190318.csv'), check.names = TRUE)
   data.table::setkey(unhiDT, 'CARID')
   
-  return(list(fleetDT=fleetDT, idsDT=idsDT, unhiDT=unhiDT, shiftsDT=shiftsDT, histDT=histDT))
+  return(list(fleetDT=fleetDT, idsDT=idsDT, unhiDT=unhiDT, shiftsDT=shiftsDT))
 }
 
 checks <- function(fleetDT, idsDT) {
   missing = idsDT[!idsDT[,Name] %in% fleetDT[,AHS.Vehicle.ID]]
   
-  return(missing) 
+  return(missing)
 }
 
 filter_decommissioned <- function(fleetDT) {
@@ -97,16 +95,18 @@ filter_nonvehicles <- function(uDT, Vcol=quote(CARID)) {
   return(uDT)
 }
 
-filter_contr_units <- function(shiftsDT) {
+filter_by_service <- function(shiftsDT) {
   keep = shiftsDT[,Active.Inactive == 'Active']
   keep = keep & (shiftsDT[,Effective.End == ""] |
-                 shiftsDT[,as.Date(Effective.End, format='%Y-%m-%d')] > Sys.Date())
+                   shiftsDT[,as.Date(Effective.End, format='%Y-%m-%d')] > Sys.Date())
   
   # Contracted ground units
   keep1 = shiftsDT[,Service_Type] %in% c('Contracted - First Nation', 'Contracted - Municipal/Not-for-Profit', 
                                          'Contracted - First Nation (Private)',
                                          'Contracted - Integrated Fire', 'Contracted - Private', 'Contracted - Air')
-  return(list('contr'=shiftsDT[keep & keep1], 'direct'=shiftsDT[keep & !keep1]))
+  keep2 = shiftsDT[,Service_Type] == 'Direct Delivery'
+  
+  return(list('contr'=shiftsDT[keep & keep1], 'direct'=shiftsDT[keep & keep2]))
 }
 
 new_vehicles <- function(fleetDT, idsDT) {
@@ -115,47 +115,42 @@ new_vehicles <- function(fleetDT, idsDT) {
 
 
 # Load
-unpack[fleetDT, idsDT, unhiDT, shiftsDT1, histDT] <- load()
+unpack[fleetDT, idsDT, unhiDT, shiftsDT] <- load()
+
 
 # Filter historical vehicle lists based on vehicle type (no planes, trains or bikes)
 unhiDT = filter_nonvehicles(unhiDT)
-histDT = filter_nonvehicles(histDT)
 
 # Remove decommissioned vehicles from fleet
 fleetDT = filter_decommissioned(fleetDT)
 
-# Identify contractor unit names
-unpack[shiftsDT, directDT] = filter_contr_units(shiftsDT1)
-shiftsDT = filter_nonvehicles(shiftsDT, quote(Unit_Name))
+# Identify contractor/dd unit names
+unpack[contrDT, directDT] = filter_by_service(shiftsDT)
 directDT = filter_nonvehicles(directDT, quote(Unit_Name))
 
 # Any units not LN in last 2 years
-novehDT = shiftsDT[!shiftsDT[,Unit_Name] %in% unhiDT[,UNID]]
+nolnDT = directDT[!directDT[,Unit_Name] %in% unhiDT[,UNID]]
 
 # Do they map if you use the alternate?
-novehDT[str_detect(Unit_Name, '(-\\d)A(\\d+)$'),alt:=str_replace(Unit_Name, '(-\\d)A(\\d+)$', '\\1B\\2')]
-novehDT[str_detect(Unit_Name, '(-\\d)B(\\d+)$'),alt:=str_replace(Unit_Name, '(-\\d)B(\\d+)$', '\\1A\\2')]
-novehDT2 = novehDT[!novehDT[,alt] %in% unhiDT[,UNID]]
+nolnDT[str_detect(Unit_Name, '(-\\d)A(\\d+)$'),alt:=str_replace(Unit_Name, '(-\\d)A(\\d+)$', '\\1B\\2')]
+nolnDT[str_detect(Unit_Name, '(-\\d)B(\\d+)$'),alt:=str_replace(Unit_Name, '(-\\d)B(\\d+)$', '\\1A\\2')]
+nolnDT2 = nolnDT[!nolnDT[,alt] %in% unhiDT[,UNID]]
 
-loginfo(paste0('The following contractor units (and associated A/B alternate) from tbl_ShiftInventory have not logged in\n  (no record in UN_HI in last 2 years):\n', 
-        paste(sort(novehDT2[,Unit_Name]), collapse='\n')))
+loginfo(paste0('The following direct delivery units (and associated A/B alternate) from tbl_ShiftInventory have not logged in\n  (no record in UN_HI in last 2 years):\n', 
+               paste(sort(nolnDT2[,Unit_Name]), collapse='\n')))
 
-# Move forward with mapped units
+# Map vehicles to units for direct and contractor vehicles
 setkey(unhiDT, 'UNID')
-setkey(shiftsDT, 'Unit_Name')
-
-unhiDT2 = unhiDT[shiftsDT]
-unhiDT2 = unhiDT2[!is.na(CARID)]
-
 setkey(directDT, 'Unit_Name')
-unhiDT3 = unhiDT[directDT]
-unhiDT3 = unhiDT3[!is.na(CARID)]
-directDT = unhiDT3[,.(.N, LastLogon=max(as.Date(CDTS2, tz='UTC')), Units=paste0(unique(UNID), collapse=';')), by=CARID]
 
-# Skip units that are already defined in previous Logis Vehicle project iteration
-#unhiDT2 = unhiDT2[!CARID %in% idsDT[,EHS.NUMBER]]
-
+unhiDT2 = unhiDT[directDT]
+unhiDT2 = unhiDT2[!is.na(CARID)]
 unhiDT2[,DGroup:=str_extract(UNID, '^[:upper:]{4}')]
+
+setkey(contrDT, 'Unit_Name')
+unhiDT3 = unhiDT[contrDT]
+unhiDT3 = unhiDT3[!is.na(CARID)]
+contrDT = unhiDT3[,.(.N, LastLogon=max(as.Date(CDTS2, tz='UTC')), Units=paste0(unique(UNID), collapse=';')), by=CARID]
 
 # Identify problem units/vehicle combos
 
@@ -165,53 +160,60 @@ tmpDT1 = unhiDT2[,.(.N, LastLogon=max(as.Date(CDTS2, tz='UTC')), Units=paste0(un
 tmp = kable(tmpDT1, format='markdown')
 loginfo(paste0('Infrequently used vehicles:\n', paste0(tmp, collapse="\n")))
 
-# KEEP all
-
-# Multiple DGroups/Services
-tmpDT2 = unhiDT2[CARID %in% unhiDT2[,uniqueN(DGroup), by=CARID][V1 > 1, CARID], 
-        .(.N, LastLogon=max(as.Date(CDTS2, tz='UTC')), Units=paste0(unique(UNID), collapse=';'), 
-          Sevices=paste0(unique(Service), collapse=';')), 
-        by=.(DGroup, CARID)][order(CARID, -N)]
+# Which vehicles are also being reported as being used by contractor unit
+tmpDT2 = unhiDT2[CARID %in% contrDT[,CARID],
+                 .(.N, LastLogon=max(as.Date(CDTS2, tz='UTC')), Units=paste0(unique(UNID), collapse=';')), 
+                 by=CARID][order(CARID, -N)]
+tmpDT2 = merge(tmpDT2, contrDT, by='CARID', all.x=TRUE, suffixes = c('.d','.c'))
 tmp = kable(tmpDT2, format='markdown')
-loginfo(paste0('Vehicles appearing in multiple DGroups:\n', paste0(tmp, collapse="\n")))
+loginfo(paste0('Vehicles appearing in Contractor Services:\n', paste0(tmp, collapse="\n")))
 
-tmpDT3 = unhiDT2[CARID %in% unhiDT2[,uniqueN(Service), by=CARID][V1 > 1, CARID], 
-                 .(.N, LastLogon=max(as.Date(CDTS2, tz='UTC')), Units=paste0(unique(UNID), collapse=';')), 
-                 by=.(Service, CARID)][order(CARID, -N)]
+unhiDT4 = unhiDT2[!CARID %in% tmpDT2[N.c>N.d,CARID]]
+dd.vehicles = sort(unique(unhiDT4[,CARID]))
+loginfo(paste0('Direct Delivery vehicles:\n', paste0(dd.vehicles, collapse="\n")))
+
+# Which vehicles do we not have config information for (documented)
+undoc.vehicles = dd.vehicles[!dd.vehicles %in% idsDT[,EHS.NUMBER]]
+
+loginfo(paste0('Vehicles with no config information:\n', paste0(undoc.vehicles, collapse="\n")))
+
+# Which vehicles are in fleet database
+unkn.vehicles = undoc.vehicles[!undoc.vehicles %in% fleetDT[,AHS.Vehicle.ID]]
+fleet.vehicles = undoc.vehicles[undoc.vehicles %in% fleetDT[,AHS.Vehicle.ID]]
+
+
+tmpDT3 = unhiDT4[CARID %in% unkn.vehicles, 
+                 .(.N, LastLogon=max(as.Date(CDTS2, tz='UTC')), Units=paste0(unique(UNID), collapse=';')),
+                 by=CARID]
 tmp = kable(tmpDT3, format='markdown')
-loginfo(paste0('Vehicles appearing in multiple Services:\n', paste0(tmp, collapse="\n")))
+loginfo(paste0('Vehicles not found in fleet database:\n', paste0(tmp, collapse="\n")))
 
-tmpDT4 = unhiDT2[CARID %in% directDT[,CARID],
-                 .(.N, LastLogon=max(as.Date(CDTS2, tz='UTC')), Units=paste0(unique(UNID), collapse=';')), 
-                 by=CARID][order(CARID, -N)]
-tmpDT4 = merge(tmpDT4, directDT, by='CARID', all.x=TRUE, suffixes = c('.c','.d'))
-tmp = kable(tmpDT4, format='markdown')
-loginfo(paste0('Vehicles appearing in Direct Delivery Services:\n', paste0(tmp, collapse="\n")))
+# Check information on undocumented vehicles found in fleet (vehicles with no prior config information)
+fleetDT = fleetDT[AHS.Vehicle.ID %in% fleet.vehicles]
+fleetDT[,.N,by=Classification]
 
-# Remove all vehicles where the count is higher for direct delivery
-omit_vehicles = c(tmpDT4[N.d > N.c, CARID], 10095)
+# Tackle by Vehicle Classifcation to determine gaps in information (needed information changes based on vehicle type)
 
-# Assign a unique Service
-tmpDT31 = tmpDT3[,.(mxN=max(N),mxL=max(LastLogon)),by=CARID]
-tmpDT31 = tmpDT31[tmpDT3, on='CARID']
+# Most ambulances (with exception of rare specialty units) should have the same configuration
+data.cols = c('IsActive', 'VehicleType', 'InServicedate', 'StockLevel', 'Division', 'StretcherConfig', 'StretcherType',
+              'PtCompSize','SeatingConfig', 'SeatingConfig2')
+ambDT = fleetDT[Classification == "AMB-Primary"]
 
-# Remove all duplicate service/vehicle assignments that have fewer records
-omit_pairs = tmpDT31[N != mxN, .(CARID, Service)]
+missing.data = apply(ambDT[,data.cols, with=FALSE], 1, function(r) any(is.na(r)) | any(r == ""))
 
-# Vehicles in AHS fleet
-tmpDT5 = unhiDT2[CARID %in% fleetDT[,AHS.Vehicle.ID], 
-                 .(.N, LastLogon=max(as.Date(CDTS2, tz='UTC')), Units=paste0(unique(UNID), collapse=';')), 
-                 by=CARID][order(CARID, -N)]
-tmp = kable(tmpDT5, format='markdown')
-loginfo(paste0('Vehicles found in fleet (and not decommissioned):\n', paste0(tmp, collapse="\n")))
 
-# Clean up and output
-contrDT = unhiDT2[, .(.N, LastLogon=max(as.Date(CDTS2, tz='UTC')), Units=paste0(unique(UNID), collapse=';')), by=.(Service,CARID)]
-setkey(contrDT, CARID, Service)
-contrDT = contrDT[!CARID %in% omit_vehicles]
-contrDT = contrDT[!omit_pairs, on=.(CARID, Service)]
-contrDT[,New:=ifelse(CARID %in% idsDT[,EHS.NUMBER], 0, 1)]
-
-setorder(contrDT, 'Service')
-
-fwrite(contrDT, here::here(paste0('../data/final/all_contractor_vehicles_',Sys.Date(),'.csv')), sep=",")
+is_stardard_amb_config <- function(arow) {
+  
+  r = c(arow["IsActive"] == TRUE,
+        arow["VehicleType"] == "Ambulance Type III",
+        arow["StockLevel"] == "ALS",
+        arow["StretcherConfig"] == "Power Load",
+        grepl('stryker.+power.+pro.+xt', arow["StretcherType"], ignore.case = TRUE),
+        arow["PtCompSize"] == "164",
+        arow["SeatingConfig"] == "Regular - 3",
+        arow["SeatingConfig2"] == "Folding Seats - 2"
+        )
+  
+  return(all(r))
+}
+sum(apply(ambDT[!missing.data, data.cols, with=FALSE], 1, is_stardard_amb_config))
