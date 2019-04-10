@@ -7,7 +7,7 @@ library(stringr)
 library(logging)
 library(kableExtra)
 library(knitr)
-library(xlsx)
+library(openxlsx)
 
 
 logReset()
@@ -278,6 +278,8 @@ excel_form <- function(vDT, service, unhiDT) {
   # Divide units into types
   vDT[, UClass:=sapply(CARID, function(v) vehicle_class(v, unhiDT2))]
   
+  
+  
   # AMBULANCES
   aDT = vDT[UClass == 'AMB']
   a_sheet <- createSheet(wb, sheetName = "Ambulances")
@@ -337,10 +339,10 @@ excel_form <- function(vDT, service, unhiDT) {
 
   # Data
   display.cols2 = c('Vehicle Number', 'Last Logon Date', 'Last Logon Unit', 'Max Stretchers', 'Max Wheelchairs', 'Max Ambulatory Patients',
-                   'Interchangeable', 'Mixed Use Configurations')
+                   'Mixed Use', 'Mixed Use Configurations')
   xdt2 = nDT[order(CARID), `:=`('Vehicle Number' = CARID, 'Last Logon Date' = LastLogon, 'Last Logon Unit' = LastUnit,
                                'Max Stretchers' = "", 'Max Wheelchairs' = "", 'Max Ambulatory Patients' = "",
-                               'Interchangeable' = "", 'Mixed Use Configurations' = "")][, display.cols2, with=FALSE]
+                               'Mixed Use' = "", 'Mixed Use Configurations' = "")][, display.cols2, with=FALSE]
   examples2 = list(
     list("Example1", as.Date('2019-04-15'), 'CALG-1T1', '2', '0', '0', 'No', ''),
     list("Example2", as.Date('2019-04-15'), 'CALG-1T2', '1', '2', '4', 'Yes', '1 wheelchair + 3 ambulatory / 1 stretcher + 1 ambulatory / 1 stretcher + 1 wheelchair'),
@@ -400,14 +402,180 @@ excel_form <- function(vDT, service, unhiDT) {
   
   
   options(xlsx.date.format="yyyy-mm-dd")
-  saveWorkbook(wb, here::here(paste0('../data/final/vehicle_survey_',service,'.xlsx')))
+  #saveWorkbook(wb, here::here(paste0('../data/final/vehicle_survey_',service,'.xlsx')))
+}
+
+excel_form2 <- function(vDT, service, unhiDT) {
+  
+  hs1 <- createStyle(textDecoration = "Bold", 
+                     border = c("top", "bottom", 'left', 'right'), borderStyle=c("thin", "double", "thin", "thin"), 
+                     valign = 'center', halign = 'center', wrapText = TRUE)
+  hs2 <- createStyle(textDecoration = "Bold", 
+                     border = c('left', 'right'), borderStyle=c("thin", "thin"), 
+                     valign = 'center', halign = 'center', wrapText = TRUE)
+  xs1 <- createStyle(textDecoration = "italic", fgFill="lightgrey" )
+  
+  
+  vDT[, UClass:=sapply(CARID, function(v) vehicle_class(v, unhiDT2))]
+  print(table(vDT[,UClass]))
+  
+  options("openxlsx.dateFormat" = "yyyy-mm-dd")
+  wb = createWorkbook()
+  addWorksheet(wb, "Ambulances")
+  addWorksheet(wb, "NATs")
+  addWorksheet(wb, "Config")
+  addWorksheet(wb, "NATs2")
+  
+  # Drop down config
+  dd = data.frame(
+    "StretcherConfig" = c("Single", "Dual", "Other"),
+    "StretcherMount" = c("Centre", "Side", "Other"),
+    "StretcherLoad" = c("Manual", "Power", "Other")
+    )
+  sc = 1
+  sr = 1
+  writeData(wb, sheet = 3, dd, startCol = sc, startRow = sr)
+  writeData(wb, sheet = 3, c("Binary","Yes","No"), startCol = ncol(dd)+1, startRow = sr)
+  writeData(wb, sheet = 3, c("Stock", "ALS", "BLS", "Bariatric Level 2", "NICU", "PICU", "Other"), startCol = ncol(dd)+2, startRow = sr)
+  
+  # AMBULANCES
+  data.cols = c('CARID', 'LastLogon', 'LastUnit')
+  aDT = vDT[UClass == 'AMB'][,data.cols, with=FALSE]
+  
+  xdt = aDT[order(CARID), `:=`('EHS Number' = CARID, 'Last Logon Date' = as.character(LastLogon), 'Last Logon Unit' = LastUnit,
+                               'Stock Level' = "", 'Stretcher Config' = "", 'Stretcher Mount Position' = "",  
+                               'Stretcher Load Type' = "", 'Stretcher Type' = "",
+                               'Max Fixed Seats (incl driver)' = "", 'Max Folding Seats' = "", 
+                               'Bariatric Level 1 capable' = "", 'Fits Isolette' = "", 'Comments' = "")]
+  xdt = xdt[,!data.cols, with=FALSE]
+  examples = list(
+    list("Example1", '2019-04-15', 'CALG-1A1', 'ALS', 'Single', 'Center', 'Power', 'Stryker Power-PRO XT', '5', '1', 'Yes', 'Yes', ""),
+    list("Example2", '2019-04-15', 'CALG-1B2', 'BLS', 'Dual', 'Side', 'Manual', 'Ferno 35X', '3', '1', 'No', 'No', ""),
+    list("Example3", '2019-04-15', 'CALG-1A3', 'Bariatric Level 2', 'Single', 'Center', 'Manual', 'Stryker MX-PRO Bariatric', '4', '1', 'Yes', 'No', ""),
+    list("Example4", '2019-04-15', 'CALG-1A4', 'NICU', 'Single', 'Center', 'Power', 'Stryker Power-PRO IT', '4', '1', 'No', 'Yes', ""),
+    xdt
+  )
+  xdt = rbindlist(examples)
+  
+  sc = 1
+  sr = 1
+  nex = 4
+  writeData(wb, sheet = 1, xdt, startCol = sc, startRow = sr, headerStyle = hs1)
+  addStyle(wb, sheet = 1, style = xs1, rows = (sr+1):(nex+sr), cols = 1:ncol(xdt), gridExpand = TRUE)
+  setColWidths(wb, sheet = 1, cols = 1:ncol(xdt), widths=15)
+  
+  fillrows = (sr+nex+1):(sr+nrow(xdt))
+  dataValidation(wb, sheet = 1, cols = sc+3, rows = fillrows, type = "list", value = "'Config'!$E$2:$E$7") # Stock
+  dataValidation(wb, sheet = 1, cols = sc+4, rows = fillrows, type = "list", value = "'Config'!$A$2:$A$4") # Stretcher config
+  dataValidation(wb, sheet = 1, cols = sc+5, rows = fillrows, type = "list", value = "'Config'!$B$2:$B$4") # Stretcher position
+  dataValidation(wb, sheet = 1, cols = sc+6, rows = fillrows, type = "list", value = "'Config'!$C$2:$C$4") # Strecher load
+  dataValidation(wb, sheet = 1, cols = sc+7, rows = fillrows, type = "textLength", operator = "greaterThan", value = 0) # Stretcher model
+  dataValidation(wb, sheet = 1, cols = sc+8, rows = fillrows,  type = "whole", operator = "between", value = c(0, 10)) # Fixed seats
+  dataValidation(wb, sheet = 1, cols = sc+9, rows = fillrows,  type = "whole", operator = "between", value = c(0, 10)) # Fold seats
+  dataValidation(wb, sheet = 1, cols = sc+10, rows = fillrows, type = "list", value = "'Config'!$D$2:$D$3") # Bariatric
+  dataValidation(wb, sheet = 1, cols = sc+11, rows = fillrows, type = "list", value = "'Config'!$D$2:$D$3") # Isolette
+  
+  # NATS
+  nDT = vDT[UClass == 'NAT'][,data.cols, with=FALSE]
+  
+  xdt2 = nDT[order(CARID), `:=`('Vehicle Number' = CARID, 'Last Logon Date' = as.character(LastLogon), 'Last Logon Unit' = LastUnit,
+                                'Max Stretchers' = "", 'Max Wheelchairs' = "", 'Max Ambulatory Patients' = "",
+                                'Mixed Use' = "", 'Mixed Use Configurations' = "", "Comments" = "")]
+  xdt2 = xdt2[,!data.cols, with=FALSE]
+  examples2 = list(
+    list("Example1", '2019-04-15', 'CALG-1T1', '2', '0', '0', 'No', '', ''),
+    list("Example2", '2019-04-15', 'CALG-1T2', '1', '2', '4', 'Yes', '1 wheelchair + 3 ambulatory / 1 stretcher + 1 ambulatory / 1 stretcher + 1 wheelchair', ''),
+    xdt2
+  )
+  xdt2 = rbindlist(examples2)
+  
+  sc = 1
+  sr = 1
+  sh = 2
+  nex = 2
+  writeData(wb, sheet = sh, xdt2, startCol = sc, startRow = sr, headerStyle = hs1)
+  addStyle(wb, sheet = sh, style = xs1, rows = (sr+1):(nex+sr), cols = 1:ncol(xdt2), gridExpand = TRUE)
+  setColWidths(wb, sheet = sh, cols = 1:ncol(xdt2), widths=15)
+  
+  fillrows = (sr+nex+1):(sr+nrow(xdt2))
+  dataValidation(wb, sheet = sh, cols = sc+3, rows = fillrows,  type = "whole", operator = "between", value = c(0, 10)) # Stretchers
+  dataValidation(wb, sheet = sh, cols = sc+4, rows = fillrows,  type = "whole", operator = "between", value = c(0, 10)) # Wheelchairs
+  dataValidation(wb, sheet = sh, cols = sc+5, rows = fillrows,  type = "whole", operator = "between", value = c(0, 20)) # Ambulatory
+  dataValidation(wb, sheet = sh, cols = sc+6, rows = fillrows, type = "list", value = "'Config'!$D$2:$D$3") # Mixed
+  
+  # NATS v2
+  h1 = list('Vehicle Number', 'Last Logon Date', 'Last Logon Unit',
+           'Max Stretchers', 'Max Wheelchairs', 'Max Ambulatory Patients',
+           'Mixed Use', 
+           'Combined Stretchers + Wheelchairs', '',
+           'Combined Stretchers + Ambulatory', '',
+           'Combined Wheelchairs + Ambulatory', '',
+           'Combined Stretchers + Wheelchairs + Ambulatory', '', '', 'Comments')
+  h2 = list("","","","","","","", 
+           "Max Stretchers in mixed use config", "Max Wheelchairs in mixed use config", 
+           "Max Stretchers in mixed use config", "Max Ambulatory in mixed use config",
+           "Max Wheelchairs in mixed use config", "Max Ambulatory in mixed use config",
+           "Max Stretchers in mixed use config", "Max Wheelchairs in mixed use config", "Max Ambulatory in mixed use config")
+
+  sc = 1
+  sr = 1
+  sh = 4
+  nex = 2
+  nc = length(h1)
+  writeData(wb, sheet = sh, h1, startCol = sc, startRow = sr)
+  writeData(wb, sheet = sh, h2, startCol = sc, startRow = sr+1)
+  for(i in 0:6) {
+    mergeCells(wb, sheet = sh, cols = sc+i, rows = sr:(sr+1))
+  }
+  for(i in seq(7,12,by=2)) {
+    mergeCells(wb, sheet = sh, cols = (sc+i):(sc+i+1), rows = sr)
+  }
+  mergeCells(wb, sheet = sh, cols = (sc+13):(sc+15), rows = sr)
+  mergeCells(wb, sheet = sh, cols = (sc+16), rows = sr:(sr+1))
+  
+  addStyle(wb, sheet = sh, style = hs2, rows = sr, cols = 1:nc, gridExpand = TRUE)
+  addStyle(wb, sheet = sh, style = hs1, rows = sr+1, cols = 1:nc, gridExpand = TRUE)
+  
+  setColWidths(wb, sheet = sh, cols = 1:7, widths = 15)
+  setColWidths(wb, sheet = sh, cols = 8:nc, widths = 20)
+  
+  examples31 = list("Example1", '2019-04-15', 'CALG-1T1', '2', '0', '0', 'No', '0', '0', '0', '0', '0', '0', '0', '0', '0')
+  examples32 = list("Example2", '2019-04-15', 'CALG-1T2', '1', '2', '4', 'Yes', '1', '2', '1', '4', '2', '4', '0', '0', '0')
+  
+  writeData(wb, sheet = sh, examples31, startCol = sc, startRow = sr+2, colNames = FALSE, rowNames = FALSE)
+  writeData(wb, sheet = sh, examples32, startCol = sc, startRow = sr+3, colNames = FALSE, rowNames = FALSE)
+  addStyle(wb, sheet = sh, style = xs1, rows = (sr+2):(nex+sr+1), cols = 1:nc, gridExpand = TRUE)
+  
+  xdt3 = nDT[order(CARID), `:=`('Vehicle Number' = CARID, 'Last Logon Date' = as.character(LastLogon), 'Last Logon Unit' = LastUnit)]
+  xdt3 = xdt3[,!data.cols, with=FALSE]
+  
+  writeData(wb, sheet = sh, xdt3, startCol = sc, startRow = sr+nex+2, colNames = FALSE, rowNames = FALSE)
+  
+  fillrows = (sr+nex+2):(sr+nrow(xdt3))
+  dataValidation(wb, sheet = sh, cols = sc+3, rows = fillrows,  type = "whole", operator = "between", value = c(0, 10)) # Stretchers
+  dataValidation(wb, sheet = sh, cols = sc+4, rows = fillrows,  type = "whole", operator = "between", value = c(0, 10)) # Wheelchairs
+  dataValidation(wb, sheet = sh, cols = sc+5, rows = fillrows,  type = "whole", operator = "between", value = c(0, 10)) # Ambulatory
+  dataValidation(wb, sheet = sh, cols = sc+6, rows = fillrows, type = "list", value = "'Config'!$D$2:$D$3") # Mixed
+  for(i in 7:15) {
+    dataValidation(wb, sheet = sh, cols = sc+i, rows = fillrows,  type = "whole", operator = "between", value = c(0, 10))
+  }
+  
+  openXL(wb)
+  
+  
 }
 
 for(serv in unique(contrDT[,Service])) {
   vDT = contrDT[Service == serv]
+  
+  if(serv != "Bonnyville") {
+    next
+  }
 
   serv_label = make.names(serv)
   print(serv_label)
-  excel_form(vDT, serv_label, unhiDT2)
+  excel_form2(vDT, serv_label, unhiDT2)
+  print('END')
+  break
 }
 
