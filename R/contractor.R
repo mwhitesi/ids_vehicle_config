@@ -413,7 +413,9 @@ excel_form2 <- function(vDT, service, unhiDT) {
   hs2 <- createStyle(textDecoration = "Bold", 
                      border = c('left', 'right'), borderStyle=c("thin", "thin"), 
                      valign = 'center', halign = 'center', wrapText = TRUE)
-  xs1 <- createStyle(textDecoration = "italic", fgFill="lightgrey" )
+  xs1 <- createStyle(textDecoration = "italic", fgFill="lightgrey", wrapText = TRUE, 
+                     # border = c('top', 'bottom'), borderStyle=c("thin", "thin")
+                     )
   
   
   vDT[, UClass:=sapply(CARID, function(v) vehicle_class(v, unhiDT2))]
@@ -424,7 +426,7 @@ excel_form2 <- function(vDT, service, unhiDT) {
   addWorksheet(wb, "Ambulances")
   addWorksheet(wb, "NATs")
   addWorksheet(wb, "Config")
-  addWorksheet(wb, "NATs2")
+  #addWorksheet(wb, "NATs2")
   
   # Drop down config
   dd = data.frame(
@@ -462,7 +464,8 @@ excel_form2 <- function(vDT, service, unhiDT) {
   nex = 4
   writeData(wb, sheet = 1, xdt, startCol = sc, startRow = sr, headerStyle = hs1)
   addStyle(wb, sheet = 1, style = xs1, rows = (sr+1):(nex+sr), cols = 1:ncol(xdt), gridExpand = TRUE)
-  setColWidths(wb, sheet = 1, cols = 1:ncol(xdt), widths=15)
+  setColWidths(wb, sheet = 1, cols = 1:(ncol(xdt)-1), widths=15)
+  setColWidths(wb, sheet = 1, cols = ncol(xdt), widths=40)
   
   fillrows = (sr+nex+1):(sr+nrow(xdt))
   dataValidation(wb, sheet = 1, cols = sc+3, rows = fillrows, type = "list", value = "'Config'!$E$2:$E$7") # Stock
@@ -495,7 +498,8 @@ excel_form2 <- function(vDT, service, unhiDT) {
   nex = 2
   writeData(wb, sheet = sh, xdt2, startCol = sc, startRow = sr, headerStyle = hs1)
   addStyle(wb, sheet = sh, style = xs1, rows = (sr+1):(nex+sr), cols = 1:ncol(xdt2), gridExpand = TRUE)
-  setColWidths(wb, sheet = sh, cols = 1:ncol(xdt2), widths=15)
+  setColWidths(wb, sheet = sh, cols = 1:(ncol(xdt2)-2), widths=15)
+  setColWidths(wb, sheet = sh, cols = (ncol(xdt2)-1):ncol(xdt2), widths=50)
   
   fillrows = (sr+nex+1):(sr+nrow(xdt2))
   dataValidation(wb, sheet = sh, cols = sc+3, rows = fillrows,  type = "whole", operator = "between", value = c(0, 10)) # Stretchers
@@ -503,79 +507,75 @@ excel_form2 <- function(vDT, service, unhiDT) {
   dataValidation(wb, sheet = sh, cols = sc+5, rows = fillrows,  type = "whole", operator = "between", value = c(0, 20)) # Ambulatory
   dataValidation(wb, sheet = sh, cols = sc+6, rows = fillrows, type = "list", value = "'Config'!$D$2:$D$3") # Mixed
   
-  # NATS v2
-  h1 = list('Vehicle Number', 'Last Logon Date', 'Last Logon Unit',
-           'Max Stretchers', 'Max Wheelchairs', 'Max Ambulatory Patients',
-           'Mixed Use', 
-           'Combined Stretchers + Wheelchairs', '',
-           'Combined Stretchers + Ambulatory', '',
-           'Combined Wheelchairs + Ambulatory', '',
-           'Combined Stretchers + Wheelchairs + Ambulatory', '', '', 'Comments')
-  h2 = list("","","","","","","", 
-           "Max Stretchers in mixed use config", "Max Wheelchairs in mixed use config", 
-           "Max Stretchers in mixed use config", "Max Ambulatory in mixed use config",
-           "Max Wheelchairs in mixed use config", "Max Ambulatory in mixed use config",
-           "Max Stretchers in mixed use config", "Max Wheelchairs in mixed use config", "Max Ambulatory in mixed use config")
-
-  sc = 1
-  sr = 1
-  sh = 4
-  nex = 2
-  nc = length(h1)
-  writeData(wb, sheet = sh, h1, startCol = sc, startRow = sr)
-  writeData(wb, sheet = sh, h2, startCol = sc, startRow = sr+1)
-  for(i in 0:6) {
-    mergeCells(wb, sheet = sh, cols = sc+i, rows = sr:(sr+1))
-  }
-  for(i in seq(7,12,by=2)) {
-    mergeCells(wb, sheet = sh, cols = (sc+i):(sc+i+1), rows = sr)
-  }
-  mergeCells(wb, sheet = sh, cols = (sc+13):(sc+15), rows = sr)
-  mergeCells(wb, sheet = sh, cols = (sc+16), rows = sr:(sr+1))
+  # # NATS v2
+  # h1 = list('Vehicle Number', 'Last Logon Date', 'Last Logon Unit',
+  #          'Max Stretchers', 'Max Wheelchairs', 'Max Ambulatory Patients',
+  #          'Mixed Use', 
+  #          'Combined Stretchers + Wheelchairs', '',
+  #          'Combined Stretchers + Ambulatory', '',
+  #          'Combined Wheelchairs + Ambulatory', '',
+  #          'Combined Stretchers + Wheelchairs + Ambulatory', '', '', 'Comments')
+  # h2 = list("","","","","","","", 
+  #          "Max Stretchers in mixed use config", "Max Wheelchairs in mixed use config", 
+  #          "Max Stretchers in mixed use config", "Max Ambulatory in mixed use config",
+  #          "Max Wheelchairs in mixed use config", "Max Ambulatory in mixed use config",
+  #          "Max Stretchers in mixed use config", "Max Wheelchairs in mixed use config", "Max Ambulatory in mixed use config")
+  # 
+  # sc = 1
+  # sr = 1
+  # sh = 4
+  # nex = 2
+  # nc = length(h1)
+  # writeData(wb, sheet = sh, h1, startCol = sc, startRow = sr)
+  # writeData(wb, sheet = sh, h2, startCol = sc, startRow = sr+1)
+  # for(i in 0:6) {
+  #   mergeCells(wb, sheet = sh, cols = sc+i, rows = sr:(sr+1))
+  # }
+  # for(i in seq(7,12,by=2)) {
+  #   mergeCells(wb, sheet = sh, cols = (sc+i):(sc+i+1), rows = sr)
+  # }
+  # mergeCells(wb, sheet = sh, cols = (sc+13):(sc+15), rows = sr)
+  # mergeCells(wb, sheet = sh, cols = (sc+16), rows = sr:(sr+1))
+  # 
+  # addStyle(wb, sheet = sh, style = hs2, rows = sr, cols = 1:nc, gridExpand = TRUE)
+  # addStyle(wb, sheet = sh, style = hs1, rows = sr+1, cols = 1:nc, gridExpand = TRUE)
+  # 
+  # setColWidths(wb, sheet = sh, cols = 1:7, widths = 15)
+  # setColWidths(wb, sheet = sh, cols = 8:nc, widths = 20)
+  # 
+  # examples31 = list("Example1", '2019-04-15', 'CALG-1T1', '2', '0', '0', 'No', '0', '0', '0', '0', '0', '0', '0', '0', '0')
+  # examples32 = list("Example2", '2019-04-15', 'CALG-1T2', '1', '2', '4', 'Yes', '1', '2', '1', '4', '2', '4', '0', '0', '0')
+  # 
+  # writeData(wb, sheet = sh, examples31, startCol = sc, startRow = sr+2, colNames = FALSE, rowNames = FALSE)
+  # writeData(wb, sheet = sh, examples32, startCol = sc, startRow = sr+3, colNames = FALSE, rowNames = FALSE)
+  # addStyle(wb, sheet = sh, style = xs1, rows = (sr+2):(nex+sr+1), cols = 1:nc, gridExpand = TRUE)
+  # 
+  # xdt3 = nDT[order(CARID), `:=`('Vehicle Number' = CARID, 'Last Logon Date' = as.character(LastLogon), 'Last Logon Unit' = LastUnit)]
+  # xdt3 = xdt3[,!data.cols, with=FALSE]
+  # 
+  # writeData(wb, sheet = sh, xdt3, startCol = sc, startRow = sr+nex+2, colNames = FALSE, rowNames = FALSE)
+  # 
+  # fillrows = (sr+nex+2):(sr+nrow(xdt3))
+  # dataValidation(wb, sheet = sh, cols = sc+3, rows = fillrows,  type = "whole", operator = "between", value = c(0, 10)) # Stretchers
+  # dataValidation(wb, sheet = sh, cols = sc+4, rows = fillrows,  type = "whole", operator = "between", value = c(0, 10)) # Wheelchairs
+  # dataValidation(wb, sheet = sh, cols = sc+5, rows = fillrows,  type = "whole", operator = "between", value = c(0, 10)) # Ambulatory
+  # dataValidation(wb, sheet = sh, cols = sc+6, rows = fillrows, type = "list", value = "'Config'!$D$2:$D$3") # Mixed
+  # for(i in 7:15) {
+  #   dataValidation(wb, sheet = sh, cols = sc+i, rows = fillrows,  type = "whole", operator = "between", value = c(0, 10))
+  # }
+  # 
   
-  addStyle(wb, sheet = sh, style = hs2, rows = sr, cols = 1:nc, gridExpand = TRUE)
-  addStyle(wb, sheet = sh, style = hs1, rows = sr+1, cols = 1:nc, gridExpand = TRUE)
-  
-  setColWidths(wb, sheet = sh, cols = 1:7, widths = 15)
-  setColWidths(wb, sheet = sh, cols = 8:nc, widths = 20)
-  
-  examples31 = list("Example1", '2019-04-15', 'CALG-1T1', '2', '0', '0', 'No', '0', '0', '0', '0', '0', '0', '0', '0', '0')
-  examples32 = list("Example2", '2019-04-15', 'CALG-1T2', '1', '2', '4', 'Yes', '1', '2', '1', '4', '2', '4', '0', '0', '0')
-  
-  writeData(wb, sheet = sh, examples31, startCol = sc, startRow = sr+2, colNames = FALSE, rowNames = FALSE)
-  writeData(wb, sheet = sh, examples32, startCol = sc, startRow = sr+3, colNames = FALSE, rowNames = FALSE)
-  addStyle(wb, sheet = sh, style = xs1, rows = (sr+2):(nex+sr+1), cols = 1:nc, gridExpand = TRUE)
-  
-  xdt3 = nDT[order(CARID), `:=`('Vehicle Number' = CARID, 'Last Logon Date' = as.character(LastLogon), 'Last Logon Unit' = LastUnit)]
-  xdt3 = xdt3[,!data.cols, with=FALSE]
-  
-  writeData(wb, sheet = sh, xdt3, startCol = sc, startRow = sr+nex+2, colNames = FALSE, rowNames = FALSE)
-  
-  fillrows = (sr+nex+2):(sr+nrow(xdt3))
-  dataValidation(wb, sheet = sh, cols = sc+3, rows = fillrows,  type = "whole", operator = "between", value = c(0, 10)) # Stretchers
-  dataValidation(wb, sheet = sh, cols = sc+4, rows = fillrows,  type = "whole", operator = "between", value = c(0, 10)) # Wheelchairs
-  dataValidation(wb, sheet = sh, cols = sc+5, rows = fillrows,  type = "whole", operator = "between", value = c(0, 10)) # Ambulatory
-  dataValidation(wb, sheet = sh, cols = sc+6, rows = fillrows, type = "list", value = "'Config'!$D$2:$D$3") # Mixed
-  for(i in 7:15) {
-    dataValidation(wb, sheet = sh, cols = sc+i, rows = fillrows,  type = "whole", operator = "between", value = c(0, 10))
-  }
-  
-  openXL(wb)
-  
-  
+  saveWorkbook(wb, here::here(paste0('../data/final/vehicle_survey_',service,'.xlsx')), overwrite = TRUE)
 }
 
 for(serv in unique(contrDT[,Service])) {
   vDT = contrDT[Service == serv]
   
-  if(serv != "Bonnyville") {
-    next
-  }
 
   serv_label = make.names(serv)
   print(serv_label)
   excel_form2(vDT, serv_label, unhiDT2)
   print('END')
-  break
+  
 }
 

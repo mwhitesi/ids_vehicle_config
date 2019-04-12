@@ -204,7 +204,7 @@ missing.data = apply(ambDT[,data.cols, with=FALSE], 1, function(r) any(is.na(r))
 
 is_stardard_amb_config <- function(arow) {
   
-  r = c(arow["IsActive"] == TRUE,
+  r = c(arow["IsActive"] == TRUE,d
         arow["VehicleType"] == "Ambulance Type III",
         arow["StockLevel"] == "ALS",
         arow["StretcherConfig"] == "Power Load",
@@ -217,3 +217,14 @@ is_stardard_amb_config <- function(arow) {
   return(all(r))
 }
 sum(apply(ambDT[!missing.data, data.cols, with=FALSE], 1, is_stardard_amb_config))
+
+# NATs
+natDT = unhiDT2[grepl('-\\dT\\d+$', UNID), .(.N, Units=list(unique(UNID)), LastLogon=max(CDTS2)), by=.(CARID)]
+setkey(natDT, 'CARID')
+
+# all
+natDT[!natDT[,CARID] %in% idsDT[,EHS.NUMBER]]
+
+# not ambulances
+natDT[!natDT[,CARID] %in% idsDT[,EHS.NUMBER]][nchar(CARID)>4]
+
