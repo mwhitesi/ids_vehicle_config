@@ -92,7 +92,7 @@ filter_active <- function(fleetDT) {
 
 filter_nonvehicles <- function(uDT, Vcol=quote(CARID)) {
   uDT = uDT[!grepl('^XV', eval(Vcol))]
-  uDT = uDT[!grepl('^C', eval(Vcol))]
+  #uDT = uDT[!grepl('^C', eval(Vcol))]
   uDT = uDT[!grepl('^FRD', eval(Vcol))]
   uDT = uDT[!grepl('\\d[XYVUROKJIGF]\\d+$', eval(Vcol), perl=TRUE)]
   uDT = uDT[!grepl('^[[:upper:]]{4}\\d$', eval(Vcol), perl=TRUE)]

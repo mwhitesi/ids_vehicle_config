@@ -87,7 +87,6 @@ filter_active <- function(fleetDT) {
 
 filter_nonvehicles <- function(uDT, Vcol=quote(CARID)) {
   uDT = uDT[!grepl('^XV', eval(Vcol))]
-  uDT = uDT[!grepl('^C', eval(Vcol))]
   uDT = uDT[!grepl('^FRD', eval(Vcol))]
   uDT = uDT[!grepl('\\d[XYVUROKJIGF]\\d+$', eval(Vcol), perl=TRUE)]
   uDT = uDT[!grepl('^[[:upper:]]{4}\\d$', eval(Vcol), perl=TRUE)]
@@ -204,7 +203,7 @@ missing.data = apply(ambDT[,data.cols, with=FALSE], 1, function(r) any(is.na(r))
 
 is_stardard_amb_config <- function(arow) {
   
-  r = c(arow["IsActive"] == TRUE,d
+  r = c(arow["IsActive"] == TRUE,
         arow["VehicleType"] == "Ambulance Type III",
         arow["StockLevel"] == "ALS",
         arow["StretcherConfig"] == "Power Load",
@@ -219,7 +218,7 @@ is_stardard_amb_config <- function(arow) {
 sum(apply(ambDT[!missing.data, data.cols, with=FALSE], 1, is_stardard_amb_config))
 
 # NATs
-natDT = unhiDT2[grepl('-\\dT\\d+$', UNID), .(.N, Units=list(unique(UNID)), LastLogon=max(CDTS2)), by=.(CARID)]
+natDT = unhiDT2[grepl('-\\dT\\d+$', UNID), .(.N, Units=list(unique(UNID)), Divisions=list(unique(Division)), LastLogon=max(CDTS2)), by=.(CARID)]
 setkey(natDT, 'CARID')
 
 # all
@@ -228,3 +227,4 @@ natDT[!natDT[,CARID] %in% idsDT[,EHS.NUMBER]]
 # not ambulances
 natDT[!natDT[,CARID] %in% idsDT[,EHS.NUMBER]][nchar(CARID)>4]
 
+natDT[nchar(CARID)>4 & substr(Divisions, 1, 12) == 'AHS - North ', .(CARID, N, Units)]
