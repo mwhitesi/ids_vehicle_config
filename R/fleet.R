@@ -32,31 +32,36 @@ unpack <- structure(NA,class="result")
 load <- function() {
   
   # New fleet data
-  fleetDT = data.table::fread(here::here('../data/raw/EMSData_Asset_Data_20190305.csv'), check.names = TRUE)
+  fleetDT = data.table::fread(here::here('../data/raw/EMSData_Asset_Data_20190506.csv'), check.names = TRUE)
   stopifnot(!any(fleetDT[,is.na(AHS.Vehicle.ID) | AHS.Vehicle.ID == ""]))
   data.table::setkey(fleetDT, 'AHS.Vehicle.ID')
   
   # Existing IDS Vehicles
-  idsDT = data.table::fread(here::here('../data/raw/Vehicle_List_20161020.csv'), check.names = TRUE)
-  stopifnot(!any(idsDT[,is.na(EHS.NUMBER) | EHS.NUMBER == ""]))
-  data.table::setkey(idsDT, 'EHS.NUMBER')
+  oldDT = data.table::fread(here::here('../data/raw/Vehicle_List_20161020.csv'), check.names = TRUE)
+  stopifnot(!any(oldDT[,is.na(EHS.NUMBER) | EHS.NUMBER == ""]))
+  data.table::setkey(oldDT, 'EHS.NUMBER')
+  
+  # Historical vehicles
+  vehicDT = data.table::fread(here::here('../data/raw/qry_DEF_VEHIC_20190507.csv'), check.names = TRUE)
+  data.table::setkey(vehicDT, 'CARID')
   
   # CSD records of units
   shiftsDT = data.table::fread(here::here('../data/raw/tbl_ShiftInventory_20190320.csv'), check.names = TRUE)
   data.table::setkey(shiftsDT, 'Shift_No')
   
   # Historical record of all vehicle IDs for units logged in in the last 2 years
-  unhiDT = data.table::fread(here::here('../data/raw/qry_UN_HI_CARID_full_20190318.csv'), check.names = TRUE)
+  unhiDT = data.table::fread(here::here('../data/raw/qry_UN_HI_CARID_full_20190506.csv'), check.names = TRUE)
   data.table::setkey(unhiDT, 'CARID')
   
-  return(list(fleetDT=fleetDT, idsDT=idsDT, unhiDT=unhiDT, shiftsDT=shiftsDT))
+  return(list(fleetDT=fleetDT, oldDT=oldDT, unhiDT=unhiDT, shiftsDT=shiftsDT, vehicDT=vehicDT))
 }
 
-checks <- function(fleetDT, idsDT) {
-  missing = idsDT[!idsDT[,Name] %in% fleetDT[,AHS.Vehicle.ID]]
-  
-  return(missing)
+filter_nonvehicle_carids <- function(vDT, Vcol=quote(CARID)) {
+  vDT = vDT[grepl('^\\d+$', CARID)]
+  return(vDT)
 }
+
+
 
 filter_decommissioned <- function(fleetDT) {
   
