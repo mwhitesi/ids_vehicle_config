@@ -50,7 +50,7 @@ load <- function() {
   data.table::setkey(shiftsDT, 'Shift_No')
   
   # Historical record of all vehicle IDs for units logged in in the last 2 years
-  unhiDT = data.table::fread(here::here('../data/raw/qry_UN_HI_CARID_full_20190506.csv'), check.names = TRUE)
+  unhiDT = data.table::fread(here::here('../data/raw/qry_UN_HI_UNIT_WKLOAD_CARID_20190510.csv'), check.names = TRUE)
   data.table::setkey(unhiDT, 'CARID')
   
   return(list(fleetDT=fleetDT, oldDT=oldDT, unhiDT=unhiDT, shiftsDT=shiftsDT, vehicDT=vehicDT))
@@ -171,24 +171,18 @@ unhi.vehicDT = unhi.vehicDT[UNID %in% directDT$Unit_Name]
 unhi.vehicDT[,generic:=str_replace(UNID, "-(\\d)[AB](\\d+)$", "-\\1_\\2")]
 unhi.vehicDT[,generic2:=str_replace(generic, "-[12]_(\\d+)$", "-DN_\\1")]
 
-# Assign a unit ID based on the X most recent uses
-# This strategy is carefully thought out to minimize assignments from incorrect logins
-# It uses recency and frequency with a flexible time frame
-
-X <- 101
-recent_rows = na.omit(unhi.vehicDT[,.I[CDTS2 > sort(CDTS2, decreasing=T)[X]],by=generic]$V1)
-un.vehic.countsDT = unhi.vehicDT[recent_rows,.(.N, LastLogon=max(CDTS2)),by=.(generic, CARID)]
+un.vehic.countsDT = unhi.vehicDT[,.(.N, LastLogon=max(CDTS2)),by=.(generic, CARID)]
 data.table::setorder(un.vehic.countsDT, -'N', -'LastLogon', 'generic')
 
 # Look for an elbow in the plot (difference between routine use and abnormal use?)
-plot(ecdf(un.vehic.countsDT[,N]))
+plot(ecdf(un.vehic.countsDT[,N]), xlim=c(0,50))
 abline(v=7)
 
-routineDT = un.vehic.countsDT[N > 7]
+routineDT = un.vehic.countsDT[N > 1]
 routineDT = routineDT[,.(Units=paste0(unique(generic), collapse=';')), by=CARID]
 
 # Rarely used vehicles
-rareDT = un.vehic.countsDT[N <= 7]
+rareDT = un.vehic.countsDT[N = 1]
 rareDT = rareDT[,.(Units=paste0(unique(generic), collapse=';')), by=CARID]
 rareDT = rareDT[!rareDT$CARID %in% routineDT$CARID]
 
@@ -204,6 +198,10 @@ fleet.vehicDT = merge(routineDT, active.fleetDT, by.x='CARID', by.y='AHS.Vehicle
 data.table::setkey(fleet.vehicDT, 'CARID')
 
 # I prebuilt a data.table that assigns row value combinations in select columns from fleetDT to Unit_Types
+# NOTE: DO NOT USE THIS AS A GUIDE. THe data in EMS fleet is extremetly inconsistent. Most ambulances have an identical setup
+# so I assigned most row value combinations that are very likely to contain mistakes to what I think is the proper type.
+# A SC114 should be an ambulance III, have 3 compartment fixed seats, a compartment size of 164 and a power load and stryker power-pro XT stretcher setup.
+# Most variations have been confirmed to be data entry errors
 # This table will need to be updated as needed
 # You can generate a starting table using the function prep_lookup_table() to get row value combinations.
 mapDT = data.table::fread(here::here('../data/interim/EMSData_unit_type_mapping_20190507.csv'), check.names = TRUE, colClasses = 'character')
