@@ -37,8 +37,9 @@ load <- function() {
   data.table::setkey(fleetDT, 'AHS.Vehicle.ID')
   
   # Existing IDS Vehicles
-  oldDT = data.table::fread(here::here('../data/raw/Vehicle_List_20161020.csv'), check.names = TRUE)
+  oldDT = data.table::fread(here::here('../data/raw/Vehicle_List_20161020_updated_unit_types_20190513.csv'), check.names = TRUE)
   stopifnot(!any(oldDT[,is.na(EHS.NUMBER) | EHS.NUMBER == ""]))
+  oldDT = unique(oldDT, by=c('EHS.NUMBER', 'NAME'))
   data.table::setkey(oldDT, 'EHS.NUMBER')
   
   # Historical vehicles
@@ -74,25 +75,10 @@ filter_decommissioned <- function(fleetDT) {
   return(fleetDT)
 }
 
-filter_active <- function(fleetDT) {
-  # Remove units that have not been logged on in the last 2 years and are not new
-  
-  activeDT = data.table::fread(here::here('../data/raw/Logis_CARID_export_from_CAD_ground_20190311.csv'), check.names = TRUE)
-  data.table::setkey(activeDT, 'Name')
-  
-  keep = fleetDT[,AHS.Vehicle.ID] %in% activeDT[,Name] # Logged into CAD in last 2 years
-  new.date = Sys.Date() - days(365)
-  new.year = as.character(year(new.date))
-  keep = keep | fleetDT[,as.Date(InServicedate, format='%Y-%m-%d')] > new.date # Put into service in last year
-  keep = keep | fleetDT[,Year] >= new.year # Model number is 1 year old
-  
-  return(fleetDT[keep])
-}
-
-filter_nonvehicles <- function(uDT, Vcol=quote(CARID)) {
+filter_nonvehicles <- function(uDT, Vcol=quote(UNID)) {
   uDT = uDT[!grepl('^XV', eval(Vcol))]
   uDT = uDT[!grepl('^FRD', eval(Vcol))]
-  uDT = uDT[!grepl('\\d[XYVUROKJIGF]\\d+$', eval(Vcol), perl=TRUE)]
+  uDT = uDT[!grepl('-\\d[XYVUROKJIGF]\\d+$', eval(Vcol), perl=TRUE)]
   uDT = uDT[!grepl('^[[:upper:]]{4}\\d$', eval(Vcol), perl=TRUE)]
   
   return(uDT)
@@ -147,6 +133,12 @@ prep_lookup_table <- function(file) {
   
 }
 
+output_staging_table <- function(dt) {
+  mydt = dt[,.(Vehicle,VehicleType)]
+  mydt[,`:=`(Active="true", EffectiveStart=Sys.Date())]
+  data.table::fwrite(mydt, here::here('../data/interim/initial_ambulance_staging_table.csv'))
+}
+
 
 # Load
 unpack[fleetDT, oldDT, unhiDT, shiftsDT, vehicDT] <- load()
@@ -156,8 +148,13 @@ vehicDT = filter_nonvehicle_carids(vehicDT)
 
 # Identify active vehicles
 unusedDT = vehicDT[!vehicDT$CARID %in% unhiDT$CARID] # Some of these unused maybe brand new, so keep for later
+
+# BRANCH POINT, DEF_VEHIC is missing several vehicles. Use UN_HI only
+vehicDT = data.table(CARID=unhiDT[,unique(CARID)])
+vehicDT = filter_nonvehicle_carids(vehicDT)
 unhi.vehicDT = unhiDT[vehicDT] # Join to history
 unhi.vehicDT = unhi.vehicDT[grepl('-\\d[AB]\\d+$', UNID)] # Only ambulances
+unhi.vehicDT = unhi.vehicDT[nchar(CARID) <= 4]
 data.table::setkey(unhi.vehicDT, 'UNID')
 
 # Only active units based on Shift Inventory
@@ -167,23 +164,21 @@ directDT = directDT[grepl('-\\d[AB]\\d+$', Unit_Name)]
 
 unhi.vehicDT = unhi.vehicDT[UNID %in% directDT$Unit_Name]
 
-# Remove vehicles that have not been consistently used more than once per unit
-unhi.vehicDT[,generic:=str_replace(UNID, "-(\\d)[AB](\\d+)$", "-\\1_\\2")]
-unhi.vehicDT[,generic2:=str_replace(generic, "-[12]_(\\d+)$", "-DN_\\1")]
+# Remove vehicles that have not been consistently used more than once per dgroup
+unhi.vehicDT[,dgroup:=str_extract(UNID, "^(.{4})")]
 
-un.vehic.countsDT = unhi.vehicDT[,.(.N, LastLogon=max(CDTS2)),by=.(generic, CARID)]
-data.table::setorder(un.vehic.countsDT, -'N', -'LastLogon', 'generic')
+un.vehic.countsDT = unhi.vehicDT[,.(.N, LastLogon=max(CDTS2)),by=.(dgroup, CARID)]
+data.table::setorder(un.vehic.countsDT, -'N', -'LastLogon', 'dgroup')
 
 # Look for an elbow in the plot (difference between routine use and abnormal use?)
 plot(ecdf(un.vehic.countsDT[,N]), xlim=c(0,50))
-abline(v=7)
 
 routineDT = un.vehic.countsDT[N > 1]
-routineDT = routineDT[,.(Units=paste0(unique(generic), collapse=';')), by=CARID]
+routineDT = routineDT[,.(Dgroups=paste0(unique(dgroup), collapse=';'), N=sum(N)), by=CARID]
 
 # Rarely used vehicles
-rareDT = un.vehic.countsDT[N = 1]
-rareDT = rareDT[,.(Units=paste0(unique(generic), collapse=';')), by=CARID]
+rareDT = un.vehic.countsDT[N == 1]
+rareDT = rareDT[,.(Dgroups=paste0(unique(dgroup), collapse=';'), N=sum(N)), by=CARID]
 rareDT = rareDT[!rareDT$CARID %in% routineDT$CARID]
 
 
@@ -216,115 +211,22 @@ fleet.vehicDT = merge(fleet.vehicDT, mapDT, all.x=TRUE, by=cols)
 
 fleet.vehicDT = merge(fleet.vehicDT, oldDT, all.x=TRUE, by.x="CARID", by.y="EHS.NUMBER")
 
+valid.vehicDT = fleet.vehicDT[!is.na(Updated) | UnitType != 'UNKNOWN']
+valid.vehicDT[,`:=`(VehicleType = ifelse(is.na(Updated), UnitType, Updated), Vehicle=CARID)]
+gaps.vehicDT = fleet.vehicDT[is.na(Updated) & UnitType == 'UNKNOWN']
 
-# # Filter historical vehicle lists based on vehicle type (no planes, trains or bikes)
-# unhiDT = filter_nonvehicles(unhiDT)
-# 
-# # Remove decommissioned vehicles from fleet
-# fleetDT = filter_decommissioned(fleetDT)
-# 
-# # Identify contractor/dd unit names
-# unpack[contrDT, directDT] = filter_by_service(shiftsDT)
-# directDT = filter_nonvehicles(directDT, quote(Unit_Name))
-# 
-# # Any units not LN in last 2 years
-# nolnDT = directDT[!directDT[,Unit_Name] %in% unhiDT[,UNID]]
-# 
-# # Do they map if you use the alternate?
-# nolnDT[str_detect(Unit_Name, '(-\\d)A(\\d+)$'),alt:=str_replace(Unit_Name, '(-\\d)A(\\d+)$', '\\1B\\2')]
-# nolnDT[str_detect(Unit_Name, '(-\\d)B(\\d+)$'),alt:=str_replace(Unit_Name, '(-\\d)B(\\d+)$', '\\1A\\2')]
-# nolnDT2 = nolnDT[!nolnDT[,alt] %in% unhiDT[,UNID]]
-# 
-# loginfo(paste0('The following direct delivery units (and associated A/B alternate) from tbl_ShiftInventory have not logged in\n  (no record in UN_HI in last 2 years):\n', 
-#                paste(sort(nolnDT2[,Unit_Name]), collapse='\n')))
-# 
-# # Map vehicles to units for direct and contractor vehicles
-# setkey(unhiDT, 'UNID')
-# setkey(directDT, 'Unit_Name')
-# 
-# unhiDT2 = unhiDT[directDT]
-# unhiDT2 = unhiDT2[!is.na(CARID)]
-# unhiDT2[,DGroup:=str_extract(UNID, '^[:upper:]{4}')]
-# 
-# setkey(contrDT, 'Unit_Name')
-# unhiDT3 = unhiDT[contrDT]
-# unhiDT3 = unhiDT3[!is.na(CARID)]
-# contrDT = unhiDT3[,.(.N, LastLogon=max(as.Date(CDTS2, tz='UTC')), Units=paste0(unique(UNID), collapse=';')), by=CARID]
-# 
-# # Identify problem units/vehicle combos
-# 
-# # Which vehicles are not frequently used in aggregate
-# tmpDT1 = unhiDT2[,.(.N, LastLogon=max(as.Date(CDTS2, tz='UTC')), Units=paste0(unique(UNID), collapse=';')), 
-#                  by=CARID][N < 5][order(as.numeric(CARID))]
-# tmp = kable(tmpDT1, format='markdown')
-# loginfo(paste0('Infrequently used vehicles:\n', paste0(tmp, collapse="\n")))
-# 
-# # Which vehicles are also being reported as being used by contractor unit
-# tmpDT2 = unhiDT2[CARID %in% contrDT[,CARID],
-#                  .(.N, LastLogon=max(as.Date(CDTS2, tz='UTC')), Units=paste0(unique(UNID), collapse=';')), 
-#                  by=CARID][order(CARID, -N)]
-# tmpDT2 = merge(tmpDT2, contrDT, by='CARID', all.x=TRUE, suffixes = c('.d','.c'))
-# tmp = kable(tmpDT2, format='markdown')
-# loginfo(paste0('Vehicles appearing in Contractor Services:\n', paste0(tmp, collapse="\n")))
-# 
-# unhiDT4 = unhiDT2[!CARID %in% tmpDT2[N.c>N.d,CARID]]
-# dd.vehicles = sort(unique(unhiDT4[,CARID]))
-# loginfo(paste0('Direct Delivery vehicles:\n', paste0(dd.vehicles, collapse="\n")))
-# 
-# # Which vehicles do we not have config information for (documented)
-# undoc.vehicles = dd.vehicles[!dd.vehicles %in% idsDT[,EHS.NUMBER]]
-# 
-# loginfo(paste0('Vehicles with no config information:\n', paste0(undoc.vehicles, collapse="\n")))
-# 
-# # Which vehicles are in fleet database
-# unkn.vehicles = undoc.vehicles[!undoc.vehicles %in% fleetDT[,AHS.Vehicle.ID]]
-# fleet.vehicles = undoc.vehicles[undoc.vehicles %in% fleetDT[,AHS.Vehicle.ID]]
-# 
-# 
-# tmpDT3 = unhiDT4[CARID %in% unkn.vehicles, 
-#                  .(.N, LastLogon=max(as.Date(CDTS2, tz='UTC')), Units=paste0(unique(UNID), collapse=';')),
-#                  by=CARID]
-# tmp = kable(tmpDT3, format='markdown')
-# loginfo(paste0('Vehicles not found in fleet database:\n', paste0(tmp, collapse="\n")))
-# 
-# # Check information on undocumented vehicles found in fleet (vehicles with no prior config information)
-# fleetDT = fleetDT[AHS.Vehicle.ID %in% fleet.vehicles]
-# fleetDT[,.N,by=Classification]
-# 
-# # Tackle by Vehicle Classifcation to determine gaps in information (needed information changes based on vehicle type)
-# 
-# # Most ambulances (with exception of rare specialty units) should have the same configuration
-# data.cols = c('IsActive', 'VehicleType', 'InServicedate', 'StockLevel', 'Division', 'StretcherConfig', 'StretcherType',
-#               'PtCompSize','SeatingConfig', 'SeatingConfig2')
-# ambDT = fleetDT[Classification == "AMB-Primary"]
-# 
-# missing.data = apply(ambDT[,data.cols, with=FALSE], 1, function(r) any(is.na(r)) | any(r == ""))
-# 
-# 
-# is_stardard_amb_config <- function(arow) {
-#   
-#   r = c(arow["IsActive"] == TRUE,
-#         arow["VehicleType"] == "Ambulance Type III",
-#         arow["StockLevel"] == "ALS",
-#         arow["StretcherConfig"] == "Power Load",
-#         grepl('stryker.+power.+pro.+xt', arow["StretcherType"], ignore.case = TRUE),
-#         arow["PtCompSize"] == "164",
-#         arow["SeatingConfig"] == "Regular - 3",
-#         arow["SeatingConfig2"] == "Folding Seats - 2"
-#         )
-#   
-#   return(all(r))
-# }
-# sum(apply(ambDT[!missing.data, data.cols, with=FALSE], 1, is_stardard_amb_config))
-# 
-# # NATs
-# natDT = unhiDT2[grepl('-\\dT\\d+$', UNID), .(.N, Units=list(unique(UNID)), Divisions=list(unique(Division)), LastLogon=max(CDTS2)), by=.(CARID)]
-# setkey(natDT, 'CARID')
-# 
-# # all
-# natDT[!natDT[,CARID] %in% idsDT[,EHS.NUMBER]]
-# 
-# # not ambulances
-# natDT[!natDT[,CARID] %in% idsDT[,EHS.NUMBER]][nchar(CARID)>4]
-# 
-# natDT[nchar(CARID)>4 & substr(Divisions, 1, 12) == 'AHS - North ', .(CARID, N, Units)]
+# Checked and obtained information individually for a couple of the gap vehicles 2019-05-15
+gaps.vehicDT[CARID == '3089', UnitType:='SC114']
+gaps.vehicDT[CARID == '3122', UnitType:='SC114']
+gaps.vehicDT[CARID == '3148', UnitType:='SC114']
+gaps.vehicDT[CARID == '3151', UnitType:='SC114']
+gaps.vehicDT[CARID == '3158', UnitType:='SC114']
+gaps.vehicDT[CARID == '3165', UnitType:='SC114']
+gaps.vehicDT[CARID == '3182', UnitType:='SC114']
+
+notgaps.vehicDT = gaps.vehicDT[UnitType != 'UNKNOWN']
+notgaps.vehicDT[,`:=`(VehicleType = ifelse(is.na(Updated), UnitType, Updated), Vehicle=CARID)]
+valid.vehicDT = rbindlist(list(valid.vehicDT, notgaps.vehicDT))
+
+
+output_staging_table(valid.vehicDT)
