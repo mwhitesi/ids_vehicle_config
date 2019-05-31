@@ -53,7 +53,7 @@ load <- function() {
   data.table::setkey(unhiDT, 'CARID')
   
   # Unit Types from CSD
-  vehtypDT = data.table::fread(here::here('../data/raw/tbl_VehicleType_20190529.csv'), check.names = TRUE)
+  vehtypDT = data.table::fread(here::here('../data/raw/tbl_VehicleType_20190531.csv'), check.names = TRUE)
   vehtypDT = vehtypDT[Active == 1, .(Vehicle,VehicleType)]
   data.table::setkey(unhiDT, 'CARID')
   
@@ -61,26 +61,11 @@ load <- function() {
 }
 
 
-filter_nonvehicle_carids <- function(vDT, Vcol=quote(CARID)) {
-  vDT = vDT[grepl('^\\d+$', CARID)]
-  return(vDT)
-}
-
-filter_nonvehicles <- function(uDT, Vcol=quote(UNID)) {
-  uDT = uDT[!grepl('^XV', eval(Vcol))]
-  uDT = uDT[!grepl('^FRD', eval(Vcol))]
-  uDT = uDT[!grepl('-\\d[XYVUROKJIGFZ]\\d+$', eval(Vcol), perl=TRUE)]
-  uDT = uDT[!grepl('^[[:upper:]]{4}\\d$', eval(Vcol), perl=TRUE)]
-  uDT = uDT[!grepl('^[[:upper:]]{3}-', eval(Vcol), perl=TRUE)]
-  
-  return(uDT)
-}
-
-
-output_staging_table <- function(dt) {
-  mydt = dt[,.(Vehicle,VehicleType)]
-  mydt[,`:=`(Active="true", EffectiveStart=Sys.Date())]
-  data.table::fwrite(mydt, here::here('../data/interim/initial_suv_staging_table.csv'))
+output_expected_table <- function(dt) {
+  mydt = dt[!is.na(ExpectedUnitType)]
+  mydt[,`:=`(ExpectedUnitTypeKey=str_c('UT_', ExpectedUnitType))]
+  mydt = mydt[,.(generic, ExpectedUnitType, DefaultVehicle, ExpectedUnitTypeKey)]
+  data.table::fwrite(mydt, here::here('../data/interim/tbl_Vehicle_expected.csv'))
 }
 
 
@@ -90,11 +75,7 @@ unpack[fleetDT, oldDT, unhiDT, shiftsDT, vehicDT, vehtypDT] <- load()
 # Select relevant shifts
 shiftsDT = shiftsDT[Active.Inactive == "Active"]
 shiftsDT = shiftsDT[CAD.Unit.Type %in% c("ALS","BLS","PRU","ENAT","BNAT","EMR","HELI","WING","FLIGHT","ALSr")]
-shiftsDT[,generic:=str_replace(Unit_Name, "(\\d)[AB](\\d+)$", "\\1_\\2")]
-
-# Filter unit history to look at recent vehicle usage and omit short shifts
-dt = Sys.Date() - lubridate::days(180)
-unhiDT = unhiDT[as.Date(CDTS2) > dt & TIME_ACTIVE >= 3*60*60]
+shiftsDT[,generic:=str_replace(Unit_Name, "-(\\d)[AB](\\d+)$", "-\\1_\\2")]
 
 # Merge vehicle history with shift data
 expDT = merge(unhiDT, shiftsDT, by.x='UNID', by.y='Unit_Name', all=FALSE)
@@ -119,19 +100,26 @@ vt_rank = c(
   "SS003",
   "SS005",
   "SS006",
-  "DS005",
   "SS013",
   "SC014",
   "SS015",
   "SC016",
-  "DS014",
-  "DS015",
   "SC114",
-  "SC115"       
+  "SC115",
+  "DS005",
+  "DS014",
+  "DS015"
 )
 expected_unit <- function(dt) {
   
-  #print(dt)
+  # Keep the 30 most recent
+  shift.times = sort(dt[,CDTS2], decreasing = TRUE)
+  if(length(shift.times) < 30) {
+    cutoff = shift.times[length(shift.times)]
+  } else {
+    cutoff = shift.times[30]
+  }
+  dt = dt[CDTS2 >= cutoff]
   
   tot = nrow(dt)
   counts = dt[, .(.N, p=.N/tot), by=VehicleType]
@@ -150,7 +138,7 @@ expected_unit <- function(dt) {
       vt = counts[N > 1, VehicleType]
       
     } else {
-      vt = counts[N > 1, VehicleType]
+      vt = counts[, VehicleType]
     }
     
     minvt = vt[which.min(match(vt, vt_rank))]
@@ -164,6 +152,7 @@ expected_unit <- function(dt) {
     
     typ = minvt
   }
+
   
   # Pick available default vehicle with matching vehicle type
   vehicles = dt[VehicleType == typ, .N, by=CARID]
@@ -173,20 +162,48 @@ expected_unit <- function(dt) {
     dv = NA
   } else {
     notavail = vehicles[,CARID] %in% default_vehicles
-    if(all(notavail)) {
-      # Use duplicate vehicle
-      dv = vehicles[which.max(N), CARID]
-      
-    } else {
+    if(any(!notavail)) {
       dv = vehicles[which(notavail==FALSE)[1], CARID]
-      default_vehicles = c(default_vehicles, dv)
+      default_vehicles <<- c(default_vehicles, dv)
+    } else {
+      dv = NA
     }
   }
   
-  #print(paste(typ, dv))
   return(list(as.character(typ), as.character(dv)))
 
 }
 expDT2 = expDT[, c("ExpectedUnitType", "DefaultVehicle"):=expected_unit(.SD), by=generic]
-expDT2 = unique(expDT2, by=c("UNID", "ExpectedUnitType", "DefaultVehicle", "generic"))
-expDT2 = expDT2[, .(Unit=min(UNID), ExpectedUnitType, DefaultVehicle), by=generic]
+expDT2 = unique(expDT2, by=c("ExpectedUnitType", "DefaultVehicle", "generic"))
+expDT2 = expDT2[]
+
+# Assign DefaultVehicle for remaining
+for(i in 1:nrow(expDT2)) {
+  dv = expDT2[i,DefaultVehicle]
+
+  if(is.na(dv)) {
+    reqd_typ = expDT2[i,ExpectedUnitType]
+    if(!is.na(reqd_typ)) {
+      print(paste('Looking for',reqd_typ))
+      dv = vehtypDT[VehicleType == reqd_typ & !Vehicle %in% default_vehicles, Vehicle]
+      print(dv)
+      
+      if(length(dv) > 0 & any(!is.na(dv))) {
+        # Pick an available vehicle with matching type
+        dv = dv[1]
+        default_vehicles <<- c(default_vehicles, dv)
+        expDT2[i,DefaultVehicle:=dv]
+      } else {
+        # Nothing left, use a duplicate
+        this.vehicles = expDT[generic == expDT2[i,generic], .N, CARID]
+        dv = this.vehicles[which.max(N), CARID]
+        expDT2[i,DefaultVehicle:=dv]
+      }
+    }
+  }
+}
+
+output_expected_table(expDT2)
+
+  
+
