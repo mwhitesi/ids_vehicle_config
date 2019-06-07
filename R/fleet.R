@@ -37,7 +37,7 @@ load <- function() {
   data.table::setkey(fleetDT, 'AHS.Vehicle.ID')
   
   # Existing IDS Vehicles
-  oldDT = data.table::fread(here::here('../data/raw/Vehicle_List_20161020_updated_unit_types_20190513.csv'), check.names = TRUE)
+  oldDT = data.table::fread(here::here('../data/raw/Vehicle_List_20161020_updated_unit_types_20190604.csv'), check.names = TRUE)
   stopifnot(!any(oldDT[,is.na(EHS.NUMBER) | EHS.NUMBER == ""]))
   oldDT = unique(oldDT, by=c('EHS.NUMBER', 'NAME'))
   data.table::setkey(oldDT, 'EHS.NUMBER')
@@ -199,7 +199,7 @@ data.table::setkey(fleet.vehicDT, 'CARID')
 # Most variations have been confirmed to be data entry errors
 # This table will need to be updated as needed
 # You can generate a starting table using the function prep_lookup_table() to get row value combinations.
-mapDT = data.table::fread(here::here('../data/interim/EMSData_unit_type_mapping_20190507.csv'), check.names = TRUE, colClasses = 'character')
+mapDT = data.table::fread(here::here('../data/interim/EMSData_unit_type_mapping_20190604.csv'), check.names = TRUE, colClasses = 'character')
 
 # Convert all inputs to lowercase
 cols = head(colnames(mapDT), -1)
@@ -216,13 +216,14 @@ valid.vehicDT[,`:=`(VehicleType = ifelse(is.na(Updated), UnitType, Updated), Veh
 gaps.vehicDT = fleet.vehicDT[is.na(Updated) & UnitType == 'UNKNOWN']
 
 # Checked and obtained information individually for a couple of the gap vehicles 2019-05-15
-gaps.vehicDT[CARID == '3089', UnitType:='SC114']
-gaps.vehicDT[CARID == '3122', UnitType:='SC114']
-gaps.vehicDT[CARID == '3148', UnitType:='SC114']
-gaps.vehicDT[CARID == '3151', UnitType:='SC114']
-gaps.vehicDT[CARID == '3158', UnitType:='SC114']
-gaps.vehicDT[CARID == '3165', UnitType:='SC114']
-gaps.vehicDT[CARID == '3182', UnitType:='SC114']
+gaps.vehicDT[CARID == '3089', UnitType:='SC113']
+gaps.vehicDT[CARID == '3122', UnitType:='SC113']
+gaps.vehicDT[CARID == '3148', UnitType:='SC113']
+gaps.vehicDT[CARID == '3151', UnitType:='SC113']
+gaps.vehicDT[CARID == '3158', UnitType:='SC113']
+gaps.vehicDT[CARID == '3165', UnitType:='SC113']
+gaps.vehicDT[CARID == '3182', UnitType:='SC113']
+gaps.vehicDT[CARID == '3112', UnitType:='DS013']
 
 notgaps.vehicDT = gaps.vehicDT[UnitType != 'UNKNOWN']
 notgaps.vehicDT[,`:=`(VehicleType = ifelse(is.na(Updated), UnitType, Updated), Vehicle=CARID)]

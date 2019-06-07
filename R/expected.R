@@ -3,6 +3,7 @@
 library(data.table)
 library(lubridate)
 library(here)
+library(readxl)
 library(stringr)
 library(logging)
 
@@ -53,7 +54,7 @@ load <- function() {
   data.table::setkey(unhiDT, 'CARID')
   
   # Unit Types from CSD
-  vehtypDT = data.table::fread(here::here('../data/raw/tbl_VehicleType_20190531.csv'), check.names = TRUE)
+  vehtypDT = data.table::fread(here::here('../data/raw/tbl_VehicleType_20190605.csv'), check.names = TRUE)
   vehtypDT = vehtypDT[Active == 1, .(Vehicle,VehicleType)]
   data.table::setkey(unhiDT, 'CARID')
   
@@ -64,7 +65,8 @@ load <- function() {
 output_expected_table <- function(dt) {
   mydt = dt[!is.na(ExpectedUnitType)]
   mydt[,`:=`(ExpectedUnitTypeKey=str_c('UT_', ExpectedUnitType))]
-  mydt = mydt[,.(generic, ExpectedUnitType, DefaultVehicle, ExpectedUnitTypeKey)]
+  mydt[,`:=`(DefaultVehicleKey=ifelse(str_sub(DefaultVehicle, 1, 2) == 'C-', str_c('UT_Air_', DefaultVehicle), str_c('UT_', DefaultVehicle)))]
+  mydt = mydt[,.(generic, ExpectedUnitType, DefaultVehicle, ExpectedUnitTypeKey, DefaultVehicleKey)]
   data.table::fwrite(mydt, here::here('../data/interim/tbl_Vehicle_expected.csv'))
 }
 
@@ -72,10 +74,14 @@ output_expected_table <- function(dt) {
 # Load
 unpack[fleetDT, oldDT, unhiDT, shiftsDT, vehicDT, vehtypDT] <- load()
 
-# Select relevant shifts
+# Select relevant ground unit shifts
+# Note: aircraft handled separately since their vehicle use is not logged the same way
 shiftsDT = shiftsDT[Active.Inactive == "Active"]
-shiftsDT = shiftsDT[CAD.Unit.Type %in% c("ALS","BLS","PRU","ENAT","BNAT","EMR","HELI","WING","FLIGHT","ALSr")]
+aircraftDT = data.table::copy(shiftsDT)
+shiftsDT = shiftsDT[CAD.Unit.Type %in% c("ALS","BLS","PRU","ENAT","BNAT","EMR","WING","ALSr")]
 shiftsDT[,generic:=str_replace(Unit_Name, "-(\\d)[AB](\\d+)$", "-\\1_\\2")]
+aircraftDT = aircraftDT[CAD.Unit.Type %in% c("HELI","FLIGHT")]
+aircraftDT = aircraftDT[,generic:=Unit_Name]
 
 # Merge vehicle history with shift data
 expDT = merge(unhiDT, shiftsDT, by.x='UNID', by.y='Unit_Name', all=FALSE)
@@ -96,19 +102,20 @@ vt_rank = c(
   "SC002N",
   "SW002N",
   "SW004N",
-  "SS002", 
-  "SS003",
+  "SS001",
+  "SS002",
+  "SS004",
   "SS005",
-  "SS006",
-  "SS013",
-  "SC014",
-  "SS015",
-  "SC016",
+  "SS012",
+  "SC013",
+  "SS014",
+  "SC015",
+  "SC113",
   "SC114",
-  "SC115",
-  "DS005",
+  "DS004",
+  "DS013",
   "DS014",
-  "DS015"
+  "DS016"
 )
 expected_unit <- function(dt) {
   
@@ -134,26 +141,27 @@ expected_unit <- function(dt) {
     # Pick lowest capacity vehicle type
     
     if(any(counts[,N] > 1)) {
-      # If possible, omit Vehicles that are only used once
+      # Omit Vehicles that are only used once
       vt = counts[N > 1, VehicleType]
+      matches = match(vt, vt_rank)
+      stopifnot(any(!is.na(matches)))
+      minvt = vt[which.min(matches)]
+      
+      logdebug(paste('Unit:', dt[1, UNID], 'does not have majority unit type. Falling back to:', minvt))
+      logdebug('START TYPE COUNTS for UNIT\n')
+      for(i in 1:nrow(counts)) {
+        logdebug(paste('\t',counts[i, VehicleType], ':', counts[i, N]))
+      }
+      logdebug('END TYPE COUNTS')
       
     } else {
-      vt = counts[, VehicleType]
+      logdebug(paste('Unit:', dt[1, UNID], ' has not used any vehicle type more than twice'))
+      minvt = NA
     }
-    
-    minvt = vt[which.min(match(vt, vt_rank))]
-    
-    logdebug(paste('Unit:', dt[1, UNID], 'does not have majority unit type. Falling back to:', minvt))
-    logdebug('START TYPE COUNTS for UNIT\n')
-    for(i in 1:nrow(counts)) {
-      logdebug(paste('\t',counts[i, VehicleType], ':', counts[i, N]))
-    }
-    logdebug('END TYPE COUNTS')
     
     typ = minvt
   }
 
-  
   # Pick available default vehicle with matching vehicle type
   vehicles = dt[VehicleType == typ, .N, by=CARID]
   setorder(vehicles, -N)
@@ -178,30 +186,44 @@ expDT2 = unique(expDT2, by=c("ExpectedUnitType", "DefaultVehicle", "generic"))
 expDT2 = expDT2[]
 
 # Assign DefaultVehicle for remaining
+logdebug('Assign vehicles to units with no default vehicle after the first pass (first pass only considered vehicles previously used by unit)')
 for(i in 1:nrow(expDT2)) {
   dv = expDT2[i,DefaultVehicle]
+  u = expDT2[i,generic]
 
   if(is.na(dv)) {
     reqd_typ = expDT2[i,ExpectedUnitType]
     if(!is.na(reqd_typ)) {
-      print(paste('Looking for',reqd_typ))
+      logdebug(paste('Unit', u, 'looking for available vehicle with type:',reqd_typ))
       dv = vehtypDT[VehicleType == reqd_typ & !Vehicle %in% default_vehicles, Vehicle]
-      print(dv)
+      
       
       if(length(dv) > 0 & any(!is.na(dv))) {
         # Pick an available vehicle with matching type
         dv = dv[1]
         default_vehicles <<- c(default_vehicles, dv)
         expDT2[i,DefaultVehicle:=dv]
+        logdebug(paste('Unit', u, 'assigned available vehicle:',dv))
       } else {
         # Nothing left, use a duplicate
         this.vehicles = expDT[generic == expDT2[i,generic], .N, CARID]
         dv = this.vehicles[which.max(N), CARID]
         expDT2[i,DefaultVehicle:=dv]
+        logdebug(paste('No vehicles available. Unit', u, 'assigned duplicate default vehicle:',dv))
       }
     }
   }
 }
+
+# Add the aircraft types:
+airexpDT = readxl::read_excel(here::here('../data/raw/Aircraft_VehicleTypes.xlsx'), sheet = "Expected")
+stopifnot(all(c('generic', 'ExpectedUnitType', 'DefaultVehicle') %in% colnames(airexpDT)))
+
+heliexpDT = readxl::read_excel(here::here('../data/raw/Helicopters.xlsx'), sheet = "Expected")
+stopifnot(all(c('generic', 'ExpectedUnitType', 'DefaultVehicle') %in% colnames(airexpDT)))
+
+expDT2 = rbind(expDT2, airexpDT, fill=TRUE)
+expDT2 = rbind(expDT2, heliexpDT, fill=TRUE)
 
 output_expected_table(expDT2)
 
