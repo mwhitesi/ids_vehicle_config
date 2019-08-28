@@ -1,4 +1,4 @@
-# SUV vehicles
+# Expected unit type
 
 library(data.table)
 library(lubridate)
