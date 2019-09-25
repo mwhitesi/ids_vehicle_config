@@ -89,19 +89,19 @@ vt_rank = c(
 expected_unit <- function(dt) {
   
   # Keep the 30 most recent
-  shift.times = sort(dt[,CDTS2], decreasing = TRUE)
+  shift.times = sort(dt[,date], decreasing = TRUE)
   if(length(shift.times) < 30) {
     cutoff = shift.times[length(shift.times)]
   } else {
     cutoff = shift.times[30]
   }
-  dt = dt[CDTS2 >= cutoff]
+  dt = dt[date >= cutoff]
   
   tot = nrow(dt)
   counts = dt[, .(.N, p=.N/tot), by=VehicleType]
   res = counts[which.max(p), .(N, p, VehicleType)]
   
-  if(res[,p]>.6) {
+  if(res[,p]>.5) {
     # Pick unit used most often
     typ = res[,VehicleType]
     
@@ -143,12 +143,18 @@ defaultDT = data.table(
 # Load
 unpack[fleetDT, oldDT, unhiDT, shiftsDT, vehicDT, vehtypDT] <- load()
 
-# Select relevant ground unit shifts
+# Select relevant ground unit shifts - manual planning only
 # Note: aircraft handled separately since their vehicle use is not logged the same way
 shiftsDT = shiftsDT[Active.Inactive == "Active"]
 aircraftDT = data.table::copy(shiftsDT)
 shiftsDT = shiftsDT[CAD.Unit.Type %in% c("ALS","BLS","ENAT","BNAT","EMR","WING","ALSr")]
 shiftsDT[,generic:=str_replace(Unit_Name, "-(\\d)[AB](\\d+)$", "-\\1_\\2")]
+
+# Autoplanned resources
+is_ift = (shiftsDT$Agency %in% c("AHSETX", "AHSCTX", "AHSNTX", "AHSATX") & shiftsDT$Type != "Air Crew")
+is_mur = (shiftsDT$Agency %in% c("AHSSCC", "AHSCCC", "AHSNCC") & !str_sub(shiftsDT$Unit_Name, 1, 4) %in% c("CALG", "EDMO"))
+shiftsDT = shiftsDT[is_ift | is_mur]
+
 aircraftDT = aircraftDT[CAD.Unit.Type %in% c("HELI","FLIGHT")]
 aircraftDT = aircraftDT[,generic:=Unit_Name]
 
@@ -170,7 +176,7 @@ dt1 %>% ggplot(aes(x=reorder(VehicleType, -N), y=N)) +
 # Histogram of number of types used per vehicle
 expDT[,.(N=uniqueN(VehicleType)),by=generic] %>% ggplot(aes(x=N)) +
   geom_histogram(binwidth = 1) +
-  labs(title="VehicleType Histogram", subtitle="Nmber of different Vehicle types used by unit", y="Frequency", x="Vehicle type count")
+  labs(title="VehicleType Histogram", subtitle="Number of different Vehicle types used by unit", y="Frequency", x="Vehicle type count")
 
 # Transitions
 # Counts
@@ -201,17 +207,69 @@ dt2 %>% ggplot(aes(x=curr, y=prev, fill=p)) +
 dt2[curr != prev, .(total_changes=sum(N))]
 dt2[curr != prev, sum(N)]/dt2[,sum(N)] * 100
 
+# Lengths with same vehicle type
+dt3 = expDT[order(date),.(date, curr=VehicleType, prev=shift(VehicleType, 1, 'lag')),by=.(generic)]
+dt3 = dt3[prev != 'lag']
+dt3 = dt3[order(date), rle(curr), by=generic]
+
+dt3 %>% ggplot(aes(x=lengths)) +
+  geom_histogram(binwidth = 5) +
+  labs(title="Consecutive VehicleType Runs", subtitle="Number of consecutive shifts with same vehicle types used by unit", y="Frequency", x="Run Length")
+
+sum(dt3$lengths > 5)
+
+# Number of vehicle types used by each unit
+dt3[,uniqueN(values),by=generic] %>% ggplot(aes(x=V1)) +
+  geom_histogram(binwidth=1)
+
 # Default approach
-dt3 = merge(expDT, defaultDT, by='UT')
+# Set a default vehicletype for each unit type
+dt4 = merge(expDT, defaultDT, by='UT')
+nrow(dt4[VehicleType == VT])/nrow(dt4)
 
-# Set VehicleTypes per DGROUP
+# Set VehicleTypes per DGROUP & unit type
+expDT[,DGroup:=str_sub(generic, 1, 4)]
+dt5 = data.table::copy(expDT)
+dt5[,UT2:=UT]
+dt5[UT=='A' | UT=='B', UT2:='A/B']
+dt5[,uniqueN(VehicleType), by=.(DGroup, UT2)] %>% ggplot(aes(x=V1)) +
+  geom_histogram(binwidth = 1)
 
+defaultDT2 = dt5[, .N, by=.(DGroup, UT2, VehicleType)][,.SD[which.max(N)],by=.(DGroup, UT2)]
+dt6 = merge(dt5, defaultDT2, by=c('DGroup','UT2'))
+
+nrow(dt6[VehicleType.x == VehicleType.y])/nrow(dt4)
 
 # Update vehicle type each month
 expDT[,`:=`(ym=paste(year(date),month(date),sep='-'))]
 
+# Iterate over each month in time period
+dts = seq(min(expDT[,date]), max(expDT[,date]), by="4 weeks")[-1]
+nshifts = 0
+nmatch = 0
+for(i in 1:length(dts)) {
+  # Slice relevant data
+  
+  s = dts[i]
+  e = s + weeks(4)
+  
+  vDT = expDT[date > s & date <= e]
+  tDT = expDT[date <= s]
+  
+  eDT = tDT[,.(EU=expected_unit(.SD)), by=generic]
+  
+  vDT = merge(vDT, eDT, by="generic")
+  
+  nshifts = nshifts + nrow(vDT)
+  nmatch = nmatch + nrow(vDT[VehicleType==EU])
+  
+  print(nshifts)
+  print(nmatch)
+  
+}
+# Proportion of shifts with correct unit type using monthly update
+nmatch/nshifts
 
-expDT2 = expDT[, "ExpectedUnitType":=expected_unit(.SD), by=generic]
 
 
 
