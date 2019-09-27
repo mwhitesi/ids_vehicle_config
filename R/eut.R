@@ -2,6 +2,8 @@
 library(stringr)
 library(logging)
 library(here)
+library(data.table)
+library(readxl)
 
 logReset()
 basicConfig(level='DEBUG')
@@ -106,25 +108,34 @@ Calc_ExpVT <- function() {
   hDT = Get_VehHist()
   
   # Join shift and historical data
-  eDT = merge(hDT, sDT, by.x='UNID', by.y='Unit_Name', all=FALSE)
+  eDT = merge(hDT, sDT, by.x='UNID', by.y='Unit_Name', all.x=FALSE, all.y=TRUE)
   eDT = merge(eDT, vDT, by.x='CARID', by.y='Name', all.x=TRUE, all.y=FALSE)
   
   # Assign a default type to use for new units or old/obsolute units that we have no login history
+  # Base it first on vehicle ID, if it exists
+  # Secondly on the Unit type
   eDT[,veh:=ifelse(suppressWarnings(is.na(as.integer(CARID))), -1, suppressWarnings(as.integer(CARID)))]
-  eDT[,cad_ut:=str_sub(UNID, 7, 7)]
+  eDT[,cad_ut:=`CAD Unit Type`]
   
-  eDT[, default_ut:= c("Complex", "UT_AA002N", "UT_SC002", "UT_AA002S", "UT_Standalone_MDT", "Undefined")[
+  eDT[, default_ut:= c("UT_AA002N", "UT_SC002", "UT_AA002S", "UT_Standalone_MDT", 
+                       "UT_AA002N", "UT_SC002", "UT_AA002S", "UT_Standalone_MDT", 
+                       "UT_AA002A.450", "UT_AA002H.250", "Undefined")[
     apply(cbind(
-      (veh < 200),
       ((veh > 4999 & veh < 9000) | (veh > 19999 & veh < 40000)), # NAT
       (veh > 999 & veh < 5000), # Ambulance
       ((veh > 39999 & veh < 50000) | (veh > 9999 & veh < 19999)), # SUV
       ((veh > 899 & veh < 1000) | (veh > 8999 & veh < 10000)), # MDT
+      (cat_ut %in% c('BNAT', 'ENAT')), # NAT
+      (cat_ut %in% c('ALS', 'BLS', 'BLSr', 'ALSr', 'WING')),, # Ambulance
+      (cat_ut %in% c('DELTA', 'COMP', 'ECHO', 'MIKE', 'PRU', 'FRU', 'BPRU', 'ITTEST')),, # SUV
+      (cat_ut %in% c('DISP', 'SEGWAY', 'ATV', 'FOOT', 'BIKE', 'CART', 'TRAIN', 'BUS', 'MASS', 'HOSP', )), # MDT
+      (cat_ut == "FLIGHT"),
+      (cat_ut == "HELI"),
       TRUE), 1, which.max)]
     ]
   
   # Assign a resource specific type based on history
-  eDT[, grouped_unit:=ifelse(str_sub(UNID,7,7)=="A" | str_sub(UNID,7,7)=="B", paste0(str_sub(UNID,1,6),'_',str_sub(UNID,8,100)), UNID)]
+  eDT[, grouped_unit:=ifelse(str_detect(UNID,"^[A-Z]{4}\\-\\d[AB]\\d+$"), paste0(str_sub(UNID,1,6),'_',str_sub(UNID,8,100)), UNID)]
   type_ranking <- function(typ) {
     typ = typ[!is.na(typ)]
     
@@ -173,7 +184,7 @@ Calc_ExpVT <- function() {
     # Find row with lowest score using relative importance as follows:
     setorder(df, c('c', 's', 'w', 'a', 'd', 'typ'))
     
-    return(df[is.na(typ),typ])
+    return(df[!is.na(typ),typ][1])
   }
   
   expected_unit <- function(dt) {
@@ -215,7 +226,7 @@ Calc_ExpVT <- function() {
         vt = counts[N > 1, VehicleTypeExternalKey]
         
         minvt = type_ranking(vt)
-        logmsg = suppressWarnings(paste(logmsg, 'inconsistent type, selecting minimum:',minvt,'from',vt))
+        logmsg = paste(logmsg, 'inconsistent type, selecting minimum:',minvt,'from',paste(vt,collapse=', '))
         
       } else {
         
@@ -234,10 +245,35 @@ Calc_ExpVT <- function() {
   eDT[,ExternalKey:=paste0("LUT_",UNID)]
   eDT2 = unique(eDT, by=c("ExpectedVehicleTypeKey", "ExternalKey"))[,.(ExternalKey, ExpectedVehicleTypeKey)]
   
-  eDT2
+  return(eDT2)
 }
+
+Cmp_ExpVT <- function(f, kcol='External Key', tcol='Expected Unit Type') {
   
+  eDT = Calc_ExpVT()
+  rDT = as.data.table(read_xlsx(f, sheet = 1, col_types = 'text'))
+  cols = c(kcol, tcol)
+  rDT = rDT[,cols, with=FALSE]
   
-eDT2[ExternalKey=="LUT_BLAI-4B2"]
-eDT2[ExternalKey=="LUT_BLAI-4A2"]
+  lutDT = merge(rDT, eDT, by.x=kcol, by.y="ExternalKey", all.x = TRUE, all.y = FALSE)
+  
+  logdebug(paste0("The following units are missing expected unit types (and will not be updated):\n", 
+                  paste0(lutDT[is.na(ExpectedVehicleTypeKey), `External Key`], collapse=',')))
+  
+  # Changed unit types
+  outcols = c("ExpectedVehicleTypeKey", "External Key")
+  lutDT = lutDT[("ExpectedVehicleTypeKey" != tcol), outcols, with=FALSE][!is.na(ExpectedVehicleTypeKey)]
+  
+  logdebug(paste0("The following units have complex unit types that cannot be automatically updated:\n", 
+                  paste0(lutDT[ExpectedVehicleTypeKey == "Complex", `External Key`], collapse=',')))
+  
+  lutDT = lutDT[ExpectedVehicleTypeKey != "Complex"]
+  
+  return(lutDT)
+}
+
+updDT = Cmp_ExpVT(f='../data/raw/TEST_LIDS_Resource_Template_2019-09-27_14-17-06.xlsx', kcol='External Key', tcol='Expected Unit Type')
+
+fwrite(updDT, file='../data/final/TEST_LIDS_LUT_VehTyp_Update_2019-09-27_14-17-06.csv')
+
 
