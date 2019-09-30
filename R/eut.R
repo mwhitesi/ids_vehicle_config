@@ -93,10 +93,29 @@ Get_Shifts <- function() {
 }
 
 Filter_Shifts <- function(df1) {
-  ut = c("ALS","BLS","PRU","ENAT","BNAT","EMR","HELI","WING","FLIGHT","ALSr","BPRU", "COMP", "SUPER", "DELTA", "ECHO", "MIKE")
+  
+  #WHERE (((SI.Type) Not In ('Transition Room')) AND ((SI.[CAD Unit Type]) Not In ('DISP','ITTEST')) AND ((SI.[Active/Inactive])='Active') AND ((STN.Status) Not In ('Inactive')))
+  
+  
+  ut = c("ALS","BLS","PRU","ENAT","BNAT","EMR","HELI","WING","FLIGHT","ALSr", "COMP", "SUPER", "DELTA", "ECHO", "MIKE")
   df1[ (Unit_Name %in% c("PICT-5A1","PICT-5B1") & Days == "Weekend") | (!(Unit_Name %in% c("PICT-5A1","PICT-5B1")) & `CAD Unit Type` %in% ut)]
   
   return(df1)
+}
+
+Get_ExpVT <- function() {
+  
+  z_con = CSD_con()
+  
+  # Retrieve
+  z_sql = paste0("SELECT * ",
+                 "FROM tbl_VehicleType_expected AS VT")
+  
+  df1 = UTILS$DatSrc_get(z_con, z_sql)
+  
+  UTILS$DatSrc_dis(z_con)
+  
+  return(z_dat)
 }
 
 Calc_ExpVT <- function() {
@@ -119,18 +138,18 @@ Calc_ExpVT <- function() {
   
   eDT[, default_ut:= c("UT_AA002N", "UT_SC002", "UT_AA002S", "UT_Standalone_MDT", 
                        "UT_AA002N", "UT_SC002", "UT_AA002S", "UT_Standalone_MDT", 
-                       "UT_AA002A.450", "UT_AA002H.250", "Undefined")[
+                       "UT_SS002A.450", "UT_SS002H.250", "Undefined")[
     apply(cbind(
       ((veh > 4999 & veh < 9000) | (veh > 19999 & veh < 40000)), # NAT
       (veh > 999 & veh < 5000), # Ambulance
       ((veh > 39999 & veh < 50000) | (veh > 9999 & veh < 19999)), # SUV
       ((veh > 899 & veh < 1000) | (veh > 8999 & veh < 10000)), # MDT
-      (cat_ut %in% c('BNAT', 'ENAT')), # NAT
-      (cat_ut %in% c('ALS', 'BLS', 'BLSr', 'ALSr', 'WING')),, # Ambulance
-      (cat_ut %in% c('DELTA', 'COMP', 'ECHO', 'MIKE', 'PRU', 'FRU', 'BPRU', 'ITTEST')),, # SUV
-      (cat_ut %in% c('DISP', 'SEGWAY', 'ATV', 'FOOT', 'BIKE', 'CART', 'TRAIN', 'BUS', 'MASS', 'HOSP', )), # MDT
-      (cat_ut == "FLIGHT"),
-      (cat_ut == "HELI"),
+      (cad_ut %in% c('BNAT', 'ENAT')), # NAT
+      (cad_ut %in% c('ALS', 'BLS', 'BLSr', 'ALSr', 'WING')),, # Ambulance
+      (cad_ut %in% c('DELTA', 'COMP', 'ECHO', 'MIKE', 'PRU', 'FRU', 'BPRU', 'ITTEST')),, # SUV
+      (cad_ut %in% c('DISP', 'SEGWAY', 'ATV', 'FOOT', 'BIKE', 'CART', 'TRAIN', 'BUS', 'MASS', 'HOSP')), # MDT
+      (cad_ut == "FLIGHT"),
+      (cad_ut == "HELI"),
       TRUE), 1, which.max)]
     ]
   
@@ -272,8 +291,34 @@ Cmp_ExpVT <- function(f, kcol='External Key', tcol='Expected Unit Type') {
   return(lutDT)
 }
 
-updDT = Cmp_ExpVT(f='../data/raw/TEST_LIDS_Resource_Template_2019-09-27_14-17-06.xlsx', kcol='External Key', tcol='Expected Unit Type')
+Upd_ExpVT <- function() {
+  
+  eDT = Calc_ExpVT()
+  vDT = Get_ExpVT()
+  
+  
+  lutDT = merge(rDT, eDT, by.x=kcol, by.y="ExternalKey", all.x = TRUE, all.y = FALSE)
+  
+  logdebug(paste0("The following units are missing expected unit types (and will not be updated):\n", 
+                  paste0(lutDT[is.na(ExpectedVehicleTypeKey), `External Key`], collapse=',')))
+  
+  # Changed unit types
+  outcols = c("ExpectedVehicleTypeKey", "External Key")
+  lutDT = lutDT[("ExpectedVehicleTypeKey" != tcol), outcols, with=FALSE][!is.na(ExpectedVehicleTypeKey)]
+  
+  logdebug(paste0("The following units have complex unit types that cannot be automatically updated:\n", 
+                  paste0(lutDT[ExpectedVehicleTypeKey == "Complex", `External Key`], collapse=',')))
+  
+  lutDT = lutDT[ExpectedVehicleTypeKey != "Complex"]
+  
+  return(lutDT)
+}
 
-fwrite(updDT, file='../data/final/TEST_LIDS_LUT_VehTyp_Update_2019-09-27_14-17-06.csv')
+
+
+
+#updDT = Cmp_ExpVT(f='../data/raw/TEST_LIDS_Resource_Template_2019-09-27_14-17-06.xlsx', kcol='External Key', tcol='Expected Unit Type')
+
+#fwrite(updDT, file='../data/final/TEST_LIDS_LUT_VehTyp_Update_2019-09-27_14-17-06.csv')
 
 
