@@ -15,20 +15,24 @@ addHandler(writeToFile, file=lfn, level='DEBUG')
 Get_VehHist <- function() {
   
   z_src = 'ARCH_ICAD'
-  min_sft_sec = 1.5 * 3600
+  min_sft_sec = 3 * 3600
   max_date = '20171231'
-  z_sql = paste0("SELECT H.[UNID], H.[CARID], H.[CDTS2], [UNIT_STATUS], [TIME_ACTIVE] ",
-  "FROM [AHS_ARCH].[dbo].[UN_HI] H, [AHS_ARCH].[dbo].[UNIT_WKLOAD] W ",
-  "WHERE CARID IS NOT NULL AND ",
-  "LEFT(H.CDTS,8) > '",max_date,"' AND ", 
-  "UNIT_STATUS = 'LO' AND ",
-  "H.CDTS = W.CDTS AND ",
-  "H.UNID = W.UNID AND ",
-  "TIME_ACTIVE >= ",min_sft_sec)
+  max_rec = 20
+  z_sql = paste0("WITH [Z1] AS ( ",
+                 "SELECT H.[UNID], H.[CARID], H.[CDTS2], [UNIT_STATUS], [TIME_ACTIVE], ",
+                 "ROW_NUMBER() OVER (PARTITION BY H.[UNID] ORDER BY H.[CDTS2] DESC) AS [ROW__]",
+                 "FROM [AHS_ARCH].[dbo].[UN_HI] H, [AHS_ARCH].[dbo].[UNIT_WKLOAD] W ",
+                 "WHERE CARID IS NOT NULL AND ",
+                 "LEFT(H.CDTS,8) > '",max_date,"' AND ", 
+                 "UNIT_STATUS = 'LO' AND ",
+                 "H.CDTS = W.CDTS AND ",
+                 "H.UNID = W.UNID AND ",
+                 "TIME_ACTIVE >= ",min_sft_sec,
+                 " ), ",
+                 "[Z0] AS (SELECT * FROM [Z1] WHERE [ROW__] >= ",max_rec,") ",
+                 "SELECT * FROM [Z0]")
   
-  z_con <- UTILS$DatSrc_con(z_src)
-  z_dat <- UTILS$DatSrc_get(z_con, z_sql)
-  z_dis <- UTILS$DatSrc_dis(z_con)
+  z_dat <- UTILS$DatSrc_ConGetDis(z_src, z_sql)
   
   return(z_dat)
 }
@@ -40,56 +44,50 @@ Get_VehTyp <- function() {
     "FROM [LogisCAD_DwhStd].[dbo].[DwhVehicle] ",
     "WHERE [DeletedStatus] = 0")
   
-  z_con <- UTILS$DatSrc_con(z_src)
-  z_dat <- UTILS$DatSrc_get(z_con, z_sql)
-  z_dis <- UTILS$DatSrc_dis(z_con)
+  z_dat <- UTILS$DatSrc_ConGetDis(z_src, z_sql)
   
   return(z_dat)
 }
 
-CSD_con <- function() {
-  # data source: connect to MS Access Server: 
-  # "\\chfs02.healthy.bewell.ca\PROJECTS\EMS Dispatch CAD\Teams\20 Working Groups\Static Data (Bulk Load) Files\CAD_STATIC_DATA.mdb"
-  #
-  # Method
-  #  'odbc::dbConnect'
-  #
-  # Args
-  #  src: data source, one of {UTILS$Z_CNST$datsrc$SRC}
-  #
-  # Return
-  #  connection object (success) or 1 (fail)
-  
-  # connect
-  z_con <- tryCatch(
-    expr = odbc::dbConnect(
-      drv = odbc::odbc(),
-      .connection_string = "Driver={Microsoft Access Driver (*.mdb, *.accdb)}; Dbq=\\\\chfs02.healthy.bewell.ca\\PROJECTS\\EMS Dispatch CAD\\Teams\\20 Working Groups\\Static Data (Bulk Load) Files\\CAD_STATIC_DATA.mdb;"
-      ),
-    error = function(z_err) return(1L)
-  )
-  if (identical(z_con, 1L)) warning('FAILED ~ CSD_con')
-  
-  # DONE
-  return(z_con)
-}
+# CSD_con <- function() {
+#   # data source: connect to MS Access Server: 
+#   # "\\chfs02.healthy.bewell.ca\PROJECTS\EMS Dispatch CAD\Teams\20 Working Groups\Static Data (Bulk Load) Files\CAD_STATIC_DATA.mdb"
+#   #
+#   # Method
+#   #  'odbc::dbConnect'
+#   #
+#   # Args
+#   #  src: data source, one of {UTILS$Z_CNST$datsrc$SRC}
+#   #
+#   # Return
+#   #  connection object (success) or 1 (fail)
+#   
+#   # connect
+#   z_con <- tryCatch(
+#     expr = odbc::dbConnect(
+#       drv = odbc::odbc(),
+#       .connection_string = "Driver={Microsoft Access Driver (*.mdb, *.accdb)}; Dbq=\\\\chfs02.healthy.bewell.ca\\PROJECTS\\EMS Dispatch CAD\\Teams\\20 Working Groups\\Static Data (Bulk Load) Files\\CAD_STATIC_DATA.mdb;"
+#       ),
+#     error = function(z_err) return(1L)
+#   )
+#   if (identical(z_con, 1L)) warning('FAILED ~ CSD_con')
+#   
+#   # DONE
+#   return(z_con)
+# }
   
 Get_Shifts <- function() {
   
-  # Connect to CSD
-  z_con = CSD_con()
-  
   # Retrieve
+  z_src = 'CSD'
   z_sql = paste0("SELECT * ",
     "FROM tbl_ShiftInventory AS SI ",
     "WHERE SI.[Active/Inactive]='Active' ",
     "ORDER BY SI.Unit_Name;")
   
-  df1 = UTILS$DatSrc_get(z_con, z_sql)
+  z_dat <- UTILS$DatSrc_ConGetDis(z_src, z_sql)
   
-  UTILS$DatSrc_dis(z_con)
-  
-  return(df1)
+  return(z_dat)
 }
 
 Filter_Shifts <- function(df1) {
@@ -105,15 +103,12 @@ Filter_Shifts <- function(df1) {
 
 Get_ExpVT <- function() {
   
-  z_con = CSD_con()
-  
   # Retrieve
-  z_sql = paste0("SELECT * ",
-                 "FROM tbl_VehicleType_expected AS VT")
+  z_src = 'CSD'
+  z_sql = paste0("SELECT [Grouped_Unit_Name], [LUT_Key], [Expected_Vehicle_Type_Key] ",
+                 "FROM tbl_VehicleType_expected")
   
-  df1 = UTILS$DatSrc_get(z_con, z_sql)
-  
-  UTILS$DatSrc_dis(z_con)
+  z_dat <- UTILS$DatSrc_ConGetDis(z_src, z_sql)
   
   return(z_dat)
 }
@@ -132,7 +127,7 @@ Calc_ExpVT <- function() {
   
   # Assign a default type to use for new units or old/obsolute units that we have no login history
   # Base it first on vehicle ID, if it exists
-  # Secondly on the Unit type
+  # Secondly on the unit type
   eDT[,veh:=ifelse(suppressWarnings(is.na(as.integer(CARID))), -1, suppressWarnings(as.integer(CARID)))]
   eDT[,cad_ut:=`CAD Unit Type`]
   
@@ -145,8 +140,8 @@ Calc_ExpVT <- function() {
       ((veh > 39999 & veh < 50000) | (veh > 9999 & veh < 19999)), # SUV
       ((veh > 899 & veh < 1000) | (veh > 8999 & veh < 10000)), # MDT
       (cad_ut %in% c('BNAT', 'ENAT')), # NAT
-      (cad_ut %in% c('ALS', 'BLS', 'BLSr', 'ALSr', 'WING')),, # Ambulance
-      (cad_ut %in% c('DELTA', 'COMP', 'ECHO', 'MIKE', 'PRU', 'FRU', 'BPRU', 'ITTEST')),, # SUV
+      (cad_ut %in% c('ALS', 'BLS', 'BLSr', 'ALSr', 'WING')), # Ambulance
+      (cad_ut %in% c('DELTA', 'COMP', 'ECHO', 'MIKE', 'PRU', 'FRU', 'BPRU', 'ITTEST')), # SUV
       (cad_ut %in% c('DISP', 'SEGWAY', 'ATV', 'FOOT', 'BIKE', 'CART', 'TRAIN', 'BUS', 'MASS', 'HOSP')), # MDT
       (cad_ut == "FLIGHT"),
       (cad_ut == "HELI"),
@@ -262,7 +257,7 @@ Calc_ExpVT <- function() {
   
   eDT[, c("ExpectedVehicleTypeKey"):=expected_unit(.SD), by=grouped_unit]
   eDT[,ExternalKey:=paste0("LUT_",UNID)]
-  eDT2 = unique(eDT, by=c("ExpectedVehicleTypeKey", "ExternalKey"))[,.(ExternalKey, ExpectedVehicleTypeKey)]
+  eDT2 = unique(eDT, by=c("ExpectedVehicleTypeKey", "ExternalKey", "grouped_unit"))[,.(ExternalKey, ExpectedVehicleTypeKey, grouped_unit)]
   
   return(eDT2)
 }
@@ -293,29 +288,32 @@ Cmp_ExpVT <- function(f, kcol='External Key', tcol='Expected Unit Type') {
 
 Upd_ExpVT <- function() {
   
+  # Compute Expected Vehicle Type
   eDT = Calc_ExpVT()
+  # Retrieve current values
   vDT = Get_ExpVT()
   
+  mDT = merge(eDT, vDT, by.x = "ExternalKey", by.y="LUT_Key", all.x=TRUE)
   
-  lutDT = merge(rDT, eDT, by.x=kcol, by.y="ExternalKey", all.x = TRUE, all.y = FALSE)
+  z_con <- UTILS$DatSrc_con('CSD')
   
-  logdebug(paste0("The following units are missing expected unit types (and will not be updated):\n", 
-                  paste0(lutDT[is.na(ExpectedVehicleTypeKey), `External Key`], collapse=',')))
+  # Insert new records
+  nDT = mDT[is.na(Expected_Vehicle_Type_Key)]
+  logdebug(paste0("Inserting ",nrow(nDT)," new records"))
+  z_sql = paste0("INSERT INTO tbl_VehicleType_expected (Grouped_Unit_Name, LUT_Key, Expected_Vehicle_Type_Key) SELECT * FROM (",
+                 paste(nDT[1:3,paste0("SELECT '",grouped_unit,"' AS Grouped_Unit_Name, '",
+                                      ExternalKey,"' AS LUT_Key,'",
+                                      ExpectedVehicleTypeKey,"' AS Expected_Vehicle_Type_Key FROM tbl_VehicleType_expected")],collapse=" UNION "), ");")
   
-  # Changed unit types
-  outcols = c("ExpectedVehicleTypeKey", "External Key")
-  lutDT = lutDT[("ExpectedVehicleTypeKey" != tcol), outcols, with=FALSE][!is.na(ExpectedVehicleTypeKey)]
+  z_sql = paste0("INSERT INTO tbl_VehicleType_expected (Grouped_Unit_Name, LUT_Key, Expected_Vehicle_Type_Key) VALUES ",
+                 paste(paste0('(?,?,?)'),collapse=","), ";")
   
-  logdebug(paste0("The following units have complex unit types that cannot be automatically updated:\n", 
-                  paste0(lutDT[ExpectedVehicleTypeKey == "Complex", `External Key`], collapse=',')))
+  DBI::dbExecute(z_con, z_sql)
   
-  lutDT = lutDT[ExpectedVehicleTypeKey != "Complex"]
   
-  return(lutDT)
 }
 
-
-
+Ins_ExpVT <- function(con, )
 
 #updDT = Cmp_ExpVT(f='../data/raw/TEST_LIDS_Resource_Template_2019-09-27_14-17-06.xlsx', kcol='External Key', tcol='Expected Unit Type')
 
