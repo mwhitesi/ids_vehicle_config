@@ -13,14 +13,14 @@ if (file.exists(lfn))
 addHandler(writeToFile, file=lfn, level='DEBUG')
 
 Get_VehHist <- function() {
-  
+  # Get most recent 90 shifts of data for each unit looking back at most 1 year
   z_src = 'ARCH_ICAD'
   min_sft_sec = 3 * 3600
-  max_date = '20171231'
-  max_rec = 20
+  max_date = '20181001'
+  max_rec = 90
   z_sql = paste0("WITH [Z1] AS ( ",
                  "SELECT H.[UNID], H.[CARID], H.[CDTS2], [UNIT_STATUS], [TIME_ACTIVE], ",
-                 "ROW_NUMBER() OVER (PARTITION BY H.[UNID] ORDER BY H.[CDTS2] DESC) AS [ROW__]",
+                 "ROW_NUMBER() OVER (PARTITION BY H.[UNID] ORDER BY H.[CDTS2] DESC) AS [ROW__] ",
                  "FROM [AHS_ARCH].[dbo].[UN_HI] H, [AHS_ARCH].[dbo].[UNIT_WKLOAD] W ",
                  "WHERE CARID IS NOT NULL AND ",
                  "LEFT(H.CDTS,8) > '",max_date,"' AND ", 
@@ -29,7 +29,7 @@ Get_VehHist <- function() {
                  "H.UNID = W.UNID AND ",
                  "TIME_ACTIVE >= ",min_sft_sec,
                  " ), ",
-                 "[Z0] AS (SELECT * FROM [Z1] WHERE [ROW__] >= ",max_rec,") ",
+                 "[Z0] AS (SELECT * FROM [Z1] WHERE [ROW__] <= ",max_rec,") ",
                  "SELECT * FROM [Z0]")
   
   z_dat <- UTILS$DatSrc_ConGetDis(z_src, z_sql)
@@ -113,7 +113,7 @@ Get_ExpVT <- function() {
   return(z_dat)
 }
 
-Calc_ExpVT <- function() {
+Calc_ExpVT <- function(testset_date_cutoff=NA) {
   
   # Retrieve data
   sDT = Get_Shifts()
@@ -125,15 +125,26 @@ Calc_ExpVT <- function() {
   eDT = merge(hDT, sDT, by.x='UNID', by.y='Unit_Name', all.x=FALSE, all.y=TRUE)
   eDT = merge(eDT, vDT, by.x='CARID', by.y='Name', all.x=TRUE, all.y=FALSE)
   
-  # Assign a default type to use for new units or old/obsolute units that we have no login history
+  if(!is.na(testset_date_cutoff)) {
+    eDT[,dt:=as.POSIXct(CDTS2, format="%Y-%m-%d %H:%M:%S", tz="UTC")]
+    ts_date = as.POSIXct(testset_date_cutoff, format="%Y-%m-%d", tz="UTC")
+    testDT = eDT[dt > ts_date]
+    eDT = eDT[dt <= ts_date]
+    
+    # Add back units that do not exist before test date as a "new" unit
+    eDT = merge(eDT, sDT, by=names(sDT)[-2], all=TRUE)
+    
+  }
+  
+  # Assign a default type to use for new units or old/obsolete units that we have no login history
   # Base it first on vehicle ID, if it exists
   # Secondly on the unit type
   eDT[,veh:=ifelse(suppressWarnings(is.na(as.integer(CARID))), -1, suppressWarnings(as.integer(CARID)))]
   eDT[,cad_ut:=`CAD Unit Type`]
   
-  eDT[, default_ut:= c("UT_AA002N", "UT_SC002", "UT_AA002S", "UT_Standalone_MDT", 
-                       "UT_AA002N", "UT_SC002", "UT_AA002S", "UT_Standalone_MDT", 
-                       "UT_SS002A.450", "UT_SS002H.250", "Undefined")[
+  eDT[, default_ut:= c("UT_AA002N", "UT_SC002", "UT_AA002S", "UT_GhostVehicle", 
+                       "UT_AA002N", "UT_SC002", "UT_AA002S", "UT_GhostVehicle", 
+                       "UT_SS002A.450", "UT_SS002H.250", "UT_GhostVehicle", "Undefined")[
     apply(cbind(
       ((veh > 4999 & veh < 9000) | (veh > 19999 & veh < 40000)), # NAT
       (veh > 999 & veh < 5000), # Ambulance
@@ -141,15 +152,18 @@ Calc_ExpVT <- function() {
       ((veh > 899 & veh < 1000) | (veh > 8999 & veh < 10000)), # MDT
       (cad_ut %in% c('BNAT', 'ENAT')), # NAT
       (cad_ut %in% c('ALS', 'BLS', 'BLSr', 'ALSr', 'WING')), # Ambulance
-      (cad_ut %in% c('DELTA', 'COMP', 'ECHO', 'MIKE', 'PRU', 'FRU', 'BPRU', 'ITTEST')), # SUV
-      (cad_ut %in% c('DISP', 'SEGWAY', 'ATV', 'FOOT', 'BIKE', 'CART', 'TRAIN', 'BUS', 'MASS', 'HOSP')), # MDT
+      (cad_ut %in% c('DELTA', 'COMP', 'SUPER', 'ECHO', 'MIKE', 'PRU', 'FRU', 'BPRU', 'ITTEST')), # SUV
+      (cad_ut %in% c('DISP', 'SEGWAY', 'ATV', 'FOOT', 'BIKE', 'CART', 'TRAIN', 'BUS', 'MASS', 'HOSP')), # MDT/Non-Transport 
       (cad_ut == "FLIGHT"),
       (cad_ut == "HELI"),
+      ((cad_ut == "OTHER") | (cad_ut == "Other")),
       TRUE), 1, which.max)]
     ]
   
   # Assign a resource specific type based on history
   eDT[, grouped_unit:=ifelse(str_detect(UNID,"^[A-Z]{4}\\-\\d[AB]\\d+$"), paste0(str_sub(UNID,1,6),'_',str_sub(UNID,8,100)), UNID)]
+  
+  # When multiple candidate types exist, select type with lowest capabilities
   type_ranking <- function(typ) {
     typ = typ[!is.na(typ)]
     
@@ -185,15 +199,15 @@ Calc_ExpVT <- function() {
     df[str_sub(typ,1,4)=="SW11", s:=12.5]
     
     # Increment wheelchairs
-    # stopifnot(all(df[str_sub(typ,1,2)=="SW" | str_sub(typ,1,2)=="WA", str_sub(typ,7,100) != ""]))
-    # df[str_sub(typ,1,2)=="SW" | str_sub(typ,1,2)=="WA", w:=as.numeric(str_sub(typ,7,100)) ]
+    stopifnot(all(df[str_sub(typ,1,2)=="SW" | str_sub(typ,1,2)=="WA", str_sub(typ,7,100) != ""]))
+    df[str_sub(typ,1,2)=="SW" | str_sub(typ,1,2)=="WA", w:=as.numeric(str_sub(typ,7,100)) ]
     
     # Increment all capacity scores
     df[,a:=as.numeric(str_sub(typ,5,5))]
     
     # Increment air speed scores
-    # stopifnot(all(df[str_sub(typ,6,6)=="H" | str_sub(typ,6,6)=="A", str_sub(typ,7,100) != ""]))
-    # df[str_sub(typ,6,6)=="H" | str_sub(typ,6,6)=="A", d:=as.numeric(str_sub(typ,7,100)) ]
+    stopifnot(all(df[str_sub(typ,6,6)=="H" | str_sub(typ,6,6)=="A", str_sub(typ,7,100) != ""]))
+    df[str_sub(typ,6,6)=="H" | str_sub(typ,6,6)=="A", d:=as.numeric(str_sub(typ,7,100)) ]
     
     # Find row with lowest score using relative importance as follows:
     setorder(df, c('c', 's', 'w', 'a', 'd', 'typ'))
@@ -201,6 +215,7 @@ Calc_ExpVT <- function() {
     return(df[!is.na(typ),typ][1])
   }
   
+  # Identify expected 
   expected_unit <- function(dt) {
     lookback=14
     prop=.6
@@ -257,14 +272,42 @@ Calc_ExpVT <- function() {
   
   eDT[, c("ExpectedVehicleTypeKey"):=expected_unit(.SD), by=grouped_unit]
   eDT[,ExternalKey:=paste0("LUT_",UNID)]
-  eDT2 = unique(eDT, by=c("ExpectedVehicleTypeKey", "ExternalKey", "grouped_unit"))[,.(ExternalKey, ExpectedVehicleTypeKey, grouped_unit)]
+  eDT2 = unique(eDT, by=c("ExpectedVehicleTypeKey", "ExternalKey", "grouped_unit", "UNID"))[,.(ExternalKey, ExpectedVehicleTypeKey, grouped_unit, UNID)]
   
-  return(eDT2)
+  if(any(eDT2[,ExpectedVehicleTypeKey == "Undefined"])) {
+    warning(paste('Unable to identify default vehicle type for record(s):', 
+                  paste(eDT2[ExpectedVehicleTypeKey == "Undefined", ExternalKey], collapse = ', ')))
+    eDT2=eDT2[ExpectedVehicleTypeKey != "Undefined"]
+  }
+  
+  if(!is.na(testset_date_cutoff)) {
+    # Compute performance
+    testDT = merge(testDT, eDT2, by = 'UNID', all.x = TRUE)
+    
+    # New units since test cutoff need a default for this to reflect "reality"
+    
+    
+    tot = nrow(testDT)
+    logdebug(paste0('-- Test Results --'))
+    m = sum(testDT[!is.na(VehicleTypeExternalKey) & !is.na(ExpectedVehicleTypeKey), VehicleTypeExternalKey == ExpectedVehicleTypeKey])
+    mm = sum(testDT[!is.na(VehicleTypeExternalKey) & !is.na(ExpectedVehicleTypeKey), VehicleTypeExternalKey != ExpectedVehicleTypeKey])
+    uv = sum(testDT[, is.na(VehicleTypeExternalKey)])
+    ut = sum(testDT[, is.na(ExpectedVehicleTypeKey)])
+    logdebug(paste0('Matches: ', m,' (', round(m/tot*100, 2),')'))
+    logdebug(paste0('Mismatches: ', mm,' (', round(mm/tot*100, 2),')'))
+    logdebug(paste0('Unknown vehicle: ', uv,' (', round(uv/tot*100, 2),')'))
+    logdebug(paste0('Undefined expected vehicle type: ', ut,' (', round(ut/tot*100, 2),')'))
+  } else {
+    testDT = NULL
+  }
+  
+  return(list(eDT2, testDT))
 }
 
 Cmp_ExpVT <- function(f, kcol='External Key', tcol='Expected Unit Type') {
   
-  eDT = Calc_ExpVT()
+  rs = Calc_ExpVT()
+  eDT = rs[[1]]
   rDT = as.data.table(read_xlsx(f, sheet = 1, col_types = 'text'))
   cols = c(kcol, tcol)
   rDT = rDT[,cols, with=FALSE]
@@ -289,31 +332,76 @@ Cmp_ExpVT <- function(f, kcol='External Key', tcol='Expected Unit Type') {
 Upd_ExpVT <- function() {
   
   # Compute Expected Vehicle Type
-  eDT = Calc_ExpVT()
+  rs = Calc_ExpVT()
+  eDT = rs[[1]]
   # Retrieve current values
   vDT = Get_ExpVT()
   
   mDT = merge(eDT, vDT, by.x = "ExternalKey", by.y="LUT_Key", all.x=TRUE)
   
-  z_con <- UTILS$DatSrc_con('CSD')
+  z_con = UTILS$DatSrc_con('CSD')
   
   # Insert new records
+  # Couldn't get multi-insert or parameterized queries to work
+  # Only way is to insert 1 record at a time as sql statement string 
   nDT = mDT[is.na(Expected_Vehicle_Type_Key)]
-  logdebug(paste0("Inserting ",nrow(nDT)," new records"))
-  z_sql = paste0("INSERT INTO tbl_VehicleType_expected (Grouped_Unit_Name, LUT_Key, Expected_Vehicle_Type_Key) SELECT * FROM (",
-                 paste(nDT[1:3,paste0("SELECT '",grouped_unit,"' AS Grouped_Unit_Name, '",
-                                      ExternalKey,"' AS LUT_Key,'",
-                                      ExpectedVehicleTypeKey,"' AS Expected_Vehicle_Type_Key FROM tbl_VehicleType_expected")],collapse=" UNION "), ");")
+  nr = nrow(nDT)
+  logdebug(paste0("Inserting ",nr," new records"))
+  for(i in 1:5) {
+    z_sql = paste0("INSERT INTO tbl_VehicleType_expected (Grouped_Unit_Name, LUT_Key, Expected_Vehicle_Type_Key) VALUES ('",
+                   paste(nDT[i, .(grouped_unit, ExternalKey, ExpectedVehicleTypeKey)], collapse="','"), "');")
+    
+    z_i = DatSrc_exec(z_con, z_sql)
   
-  z_sql = paste0("INSERT INTO tbl_VehicleType_expected (Grouped_Unit_Name, LUT_Key, Expected_Vehicle_Type_Key) VALUES ",
-                 paste(paste0('(?,?,?)'),collapse=","), ";")
+    if(z_i == 1) {
+      logdebug(paste0('Inserted record ',nDT[i, ExternalKey]))
+    } else {
+      logdebug(paste0('Insertion failed for record ',nDT[i, ExternalKey]))
+    }
+  }
   
-  DBI::dbExecute(z_con, z_sql)
+  # Updated changed records
+  uDT = mDT[!is.na(Expected_Vehicle_Type_Key) & Expected_Vehicle_Type_Key != ExpectedVehicleTypeKey]
+  nr = nrow(uDT)
+  logdebug(paste0("Updating ",nr," records"))
+  for(i in 1:nr) {
+    z_sql = paste0("UPDATE tbl_VehicleType_expected SET [Expected_Vehicle_Type_Key] = '", uDT[i,ExpectedVehicleTypeKey],
+                   "' WHERE [LUT_Key] = '",uDT[i,ExternalKey],"';")
+    
+    z_i = DatSrc_exec(z_con, z_sql)
+    
+    if(z_i == 1) {
+      logdebug(paste0('Updated record ',nDT[i, ExternalKey], ' with new VT: ', nDT[i, ExpectedVehicleTypeKey]))
+    } else {
+      logdebug(paste0('Update failed for record ',nDT[i, ExternalKey]))
+    }
+    
+  }
   
-  
+  UTILS$DatSrc_dis(z_con)
 }
 
-Ins_ExpVT <- function(con, )
+
+DatSrc_exec <- function(con, sql) {
+  
+  runone <- function(con, sql) {
+    rs = odbc::dbSendStatement(con, sql)
+    rows = odbc::dbGetRowsAffected(rs)
+    odbc::dbClearResult(rs)
+    
+    return(rows)
+  }
+  
+  z_i <- tryCatch(
+    runone(con, sql), 
+    error = function(z_err) return(-1L)
+  )
+  if (identical(z_i, -1L)) {
+    warning('FAILED ~ DatIns')
+  }
+  
+  return(z_i)
+}
 
 #updDT = Cmp_ExpVT(f='../data/raw/TEST_LIDS_Resource_Template_2019-09-27_14-17-06.xlsx', kcol='External Key', tcol='Expected Unit Type')
 
